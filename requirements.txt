@@ -1,0 +1,12 @@
+# requirements.txt
+# Eisenhower Matrix Planner - Python + CustomTkinter
+
+customtkinter==5.2.2
+SQLAlchemy==2.0.35
+APScheduler==3.10.4
+Pillow==10.4.0
+structlog==24.1.0
+rich==13.7.1
+
+# Optional - for building executable
+# pyinstaller==6.10.0
