@@ -1,4 +1,3 @@
-```markdown
 # Eisenhower Matrix Planner
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
@@ -37,9 +36,8 @@ Tasks appear as **minimal colored dots** — hover to reveal full details. Pure 
 | structlog + rich       | Professional colored logging     |
 | Tkinter Canvas         | Smooth drag & drop + hover zones |
 
-### Screenshots
 
-![App Screenshot](screenshots/demo.png)
+
 
 > Minimal dots → hover → full task card. Pure Figma/Notion vibes.
 
