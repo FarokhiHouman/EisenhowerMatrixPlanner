@@ -4,8 +4,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:EisenhowerMatrixPlanner.Views.Controls"
 		xmlns:behaviors="clr-namespace:EisenhowerMatrixPlanner.Common.Behaviors" 
-        xmlns:viewmodels="clr-namespace:EisenhowerMatrixPlanner.ViewModels" 
-		xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+
         Title="{Binding Title}" Height="700" Width="1100"
         WindowStartupLocation="CenterScreen"
         Background="#fafafa">

@@ -8,38 +8,37 @@ using EisenhowerMatrixPlanner.Core.Entities;
 using EisenhowerMatrixPlanner.Services;
 
 
-namespace EisenhowerMatrixPlanner.ViewModels;
+namespace EisenhowerMatrixPlanner.ViewModels; // این خط حیاتیه!
 public partial class MainWindowViewModel : ObservableObject {
 	public MainWindowViewModel(TaskService taskService) {
-		_taskService = taskService;
-		LoadSampleData();
+		_taskService     = taskService;
+		LoadTasksCommand = new AsyncRelayCommand(LoadTasksAsync);
+		AddTaskCommand   = new RelayCommand(AddTask);
+
+		// لود اولیه
+		_ = LoadTasksAsync();
 	}
 
-	public ObservableCollection<TaskItem> Tasks { get; } = new();
+	public ObservableCollection<TaskItem> Tasks            { get; } = new();
+	public IAsyncRelayCommand             LoadTasksCommand { get; }
+	public IRelayCommand                  AddTaskCommand   { get; }
 	[ObservableProperty]
 	private string _title = "Eisenhower Matrix Planner";
 	private readonly TaskService _taskService;
 
-	private void LoadSampleData() {
-		TaskItem t1 = new("پروژه نهایی", importance: 9, urgency: 9);
-		TaskItem t2 = new("ورزش امروز", importance: 8, urgency: 6);
-		TaskItem t3 = new("چک کردن اینستاگرام", importance: 2, urgency: 7);
-		TaskItem t4 = new("یادگیری WPF", importance: 9, urgency: 3);
-		Tasks.Add(t1);
-		Tasks.Add(t2);
-		Tasks.Add(t3);
-		Tasks.Add(t4);
-		foreach (TaskItem task in Tasks) {
-			_taskService.UpdateCanvasPosition(task,
-											  canvasWidth: 900,
-											  canvasHeight: 550); // اندازه واقعی بعداً از Canvas می‌گیریم
+	private async Task LoadTasksAsync() {
+		Tasks.Clear();
+		IEnumerable<TaskItem> tasks = await _taskService.GetAllTasksAsync();
+		foreach (TaskItem task in tasks) {
+			Tasks.Add(task);
+			_taskService.UpdateCanvasPosition(task, canvasWidth: 900, canvasHeight: 550);
 		}
 	}
 
-	[RelayCommand]
-	private void AddTask() {
-		TaskItem newTask = new("تسک جدید", importance: 5, urgency: 5);
+	private async void AddTask() {
+		TaskItem newTask = new("New Task", importance: 5, urgency: 5);
 		Tasks.Add(newTask);
 		_taskService.UpdateCanvasPosition(newTask, canvasWidth: 900, canvasHeight: 550);
+		await _taskService.AddTaskAsync(newTask);
 	}
 }

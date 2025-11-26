@@ -5,6 +5,9 @@ using System.Windows.Input;
 using System.Windows.Media;
 
 using EisenhowerMatrixPlanner.Core.Entities;
+using EisenhowerMatrixPlanner.Services;
+
+using Microsoft.Extensions.DependencyInjection;
 
 
 namespace EisenhowerMatrixPlanner.Common.Behaviors;
@@ -69,8 +72,21 @@ public static class DragBehavior {
 	}
 
 	private static void Element_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) {
-		if (sender is FrameworkElement element) {
+		if (sender is FrameworkElement element && _isDragging) {
 			element.ReleaseMouseCapture();
+			if (element.DataContext is TaskItem task) {
+				Canvas? canvas = FindParent<Canvas>(element);
+				if (canvas != null) {
+					Point pos = e.GetPosition(canvas);
+					task.CanvasX = pos.X - element.ActualWidth  / 2;
+					task.CanvasY = pos.Y - element.ActualHeight / 2;
+					TaskService? service = App.ServiceProvider?.GetRequiredService<TaskService>();
+					service?.UpdateCanvasPosition(task, canvas.ActualWidth, canvas.ActualHeight);
+
+					// ذخیره در دیتابیس
+					_ = Task.Run(async () => await service?.UpdateTaskAsync(task));
+				}
+			}
 			_isDragging = false;
 		}
 	}

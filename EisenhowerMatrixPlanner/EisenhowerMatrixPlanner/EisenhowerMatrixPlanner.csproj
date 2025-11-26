@@ -16,7 +16,6 @@
     <Folder Include="Core\ValueObjects\" />
     <Folder Include="Models\" />
     <Folder Include="Resources\Styles\" />
-    <Folder Include="Views\Windows\" />
   </ItemGroup>
 
   <ItemGroup>
