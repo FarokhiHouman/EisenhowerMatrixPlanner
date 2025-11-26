@@ -1,9 +1,9 @@
-# ui/main_window.py
+# ui/main_window.py — نسخه نهایی بدون حاشیه اضافی
+
 import customtkinter as ctk
 from .matrix_canvas import MatrixCanvas
 from .task_dialog import TaskDialog
-from services.task_service import create_task, get_session  # اضافه شد
-from database.models import Task
+from services.task_service import create_task, get_session
 from tkinter import filedialog, messagebox
 from datetime import datetime
 import io
@@ -14,88 +14,72 @@ class MainWindow(ctk.CTkFrame):
         super().__init__(master, corner_radius=0, fg_color="transparent")
         self.master = master
         self.setup_ui()
-        self.create_canvas()
 
     def setup_ui(self):
-        title = ctk.CTkLabel(self.master, text="Eisenhower Matrix Planner", font=ctk.CTkFont(size=28, weight="bold"))
-        title.pack(pady=(20, 10))
+        # هدر خیلی کوچیک و شیک
+        header = ctk.CTkFrame(self.master, height=90, fg_color=("gray10", "gray90"), corner_radius=0)
+        header.pack(fill="x")
+        header.pack_propagate(False)
 
-        toolbar = ctk.CTkFrame(self.master, height=50)
+        title = ctk.CTkLabel(
+            header,
+            text="Eisenhower Matrix",
+            font=ctk.CTkFont(family="Segoe UI", size=36, weight="bold"),
+            text_color=("#2ecc71", "#27ae60")
+        )
+        title.pack(pady=20)
+
+        # نوار ابزار
+        toolbar = ctk.CTkFrame(self.master, height=70, fg_color=("gray14", "gray92"))
         toolbar.pack(fill="x", padx=20, pady=(0, 10))
         toolbar.pack_propagate(False)
 
-        ctk.CTkButton(toolbar, text="+ New Task", width=130, font=ctk.CTkFont(size=14, weight="bold"),
-                      command=self.add_new_task).pack(side="left", padx=10, pady=8)
+        left = ctk.CTkFrame(toolbar, fg_color="transparent")
+        left.pack(side="left")
+        ctk.CTkButton(
+            left, text="+ New Task", width=160, height=44,
+            font=ctk.CTkFont(size=15, weight="bold"), corner_radius=12,
+            fg_color=("#2ecc71", "#27ae60"), hover_color=("#27ae60", "#219a52"),
+            command=self.add_new_task
+        ).pack(side="left", padx=10, pady=10)
 
-        self.theme_switch = ctk.CTkSwitch(toolbar, text="Dark Mode", command=self.toggle_theme)
-        self.theme_switch.pack(side="right", padx=20, pady=8)
+        right = ctk.CTkFrame(toolbar, fg_color="transparent")
+        right.pack(side="right")
+
+        self.theme_switch = ctk.CTkSwitch(right, text="Dark Mode", command=self.toggle_theme)
+        self.theme_switch.pack(side="right", padx=20, pady=10)
         if ctk.get_appearance_mode() == "Dark":
             self.theme_switch.select()
 
-        ctk.CTkButton(toolbar, text="Export to PNG", command=self.export_to_png).pack(side="right", padx=10, pady=8)
+        ctk.CTkButton(right, text="Export PNG", width=130, command=self.export_to_png).pack(side="right", padx=10, pady=10)
 
-    def create_canvas(self):
-        canvas_frame = ctk.CTkFrame(self.master)
-        canvas_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        # کانواس تمام صفحه!
+        canvas_frame = ctk.CTkFrame(self.master, fg_color=("gray98", "gray10"))
+        canvas_frame.pack(fill="both", expand=True, padx=0, pady=0)  # بدون padx/pady!
 
         self.canvas = MatrixCanvas(canvas_frame, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
 
-        # اسکرول‌بارها
-        v_scroll = ctk.CTkScrollbar(canvas_frame, orientation="vertical", command=self.canvas.yview)
-        h_scroll = ctk.CTkScrollbar(canvas_frame, orientation="horizontal", command=self.canvas.xview)
-        self.canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        v_scroll.pack(side="right", fill="y")
-        h_scroll.pack(side="bottom", fill="x")
-
-        self.canvas.after(300, self.canvas.load_tasks)  # صبر کنیم تا کامل باز بشه
+        # لود تسک‌ها بعد از آماده شدن
+        self.canvas.after(500, self.canvas.load_tasks)
 
     def add_new_task(self):
-        dialog = TaskDialog(self.master, title="Create New Task")
+        dialog = TaskDialog(self.master, title="New Task")
         self.master.wait_window(dialog)
-        if not dialog.result:
-            return
-
-        task = create_task(
-            title=dialog.result["title"],
-            importance=dialog.result["importance"],
-            urgency=dialog.result["urgency"]
-        )
-
-        x, y = self.canvas.importance_urgency_to_xy(task.importance, task.urgency)
-        task.canvas_x = x
-        task.canvas_y = y
-
-        # ذخیره موقعیت
-        sess = get_session()
-        sess.merge(task)
-        sess.commit()
-        sess.close()
-
-        self.refresh_canvas()
-
-    def refresh_canvas(self):
-        for card in self.canvas.cards.values():
-            card.destroy()
-        self.canvas.cards.clear()
-        self.canvas.load_tasks()
+        if dialog.result:
+            task = create_task(**dialog.result)
+            x, y = self.canvas.importance_urgency_to_xy(task.importance, task.urgency)
+            task.canvas_x, task.canvas_y = x, y
+            sess = get_session()
+            sess.merge(task); sess.commit(); sess.close()
+            self.canvas.load_tasks()
 
     def toggle_theme(self):
-        mode = "dark" if self.theme_switch.get() else "light"
-        ctk.set_appearance_mode(mode)
+        ctk.set_appearance_mode("dark" if self.theme_switch.get() else "light")
 
     def export_to_png(self):
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            filetypes=[("PNG files", "*.png")],
-            initialfile=f"eisenhower-matrix-{datetime.now():%Y%m%d-%H%M%S}.png"
-        )
-        if not file_path:
-            return
-        try:
+        file = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", "*.png")])
+        if file:
             ps = self.canvas.postscript(colormode='color')
-            img = Image.open(io.BytesIO(ps.encode('utf-8')))
-            img.save(file_path, "PNG")
-            messagebox.showinfo("Success", f"Saved:\n{file_path}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Export failed:\n{e}")
+            Image.open(io.BytesIO(ps.encode('utf-8'))).save(file, "PNG")
+            messagebox.showinfo("موفقیت", "تصویر با موفقیت ذخیره شد!")
