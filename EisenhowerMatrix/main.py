@@ -1,21 +1,24 @@
+# pip install customtkinter argon2-cffi cryptography
 import json
 import os
 import uuid
 import secrets
 import base64
 import shutil
-from tkinter import *
-from tkinter import ttk, messagebox, simpledialog
+from typing import List, Dict, Any
+import customtkinter as ctk
 from argon2 import low_level
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.exceptions import InvalidTag
-from typing import List, Dict, Any
 
-# ====================== تنظیمات امنیتی ======================
+# Appearance settings
+ctk.set_appearance_mode("System")  # "Dark", "Light", "System"
+ctk.set_default_color_theme("blue")
+
 TASKS_FILE = "tasks.eisen.enc"
 CONFIG_FILE = "config.json"
 
-# ====================== مدل تسک ======================
+
 class Task:
     def __init__(self, name: str, urgency: int = 3, importance: int = 3, task_id: str = None):
         self.id = task_id or str(uuid.uuid4())
@@ -24,22 +27,17 @@ class Task:
         self.importance = importance
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "urgency": self.urgency,
-            "importance": self.importance
-        }
+        return {"id": self.id, "name": self.name, "urgency": self.urgency, "importance": self.importance}
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> 'Task':
         return Task(data["name"], data["urgency"], data["importance"], data["id"])
 
-# ====================== مدیریت رمزنگاری و ذخیره‌سازی ======================
+
 class SecureStorage:
     def __init__(self):
-        self.fernet: Fernet | None = None
-        self.salt: bytes | None = None
+        self.fernet = None
+        self.salt = None
         self._load_or_create_config()
 
     def _load_or_create_config(self):
@@ -67,388 +65,334 @@ class SecureStorage:
             self.fernet = Fernet(key)
             if os.path.exists(TASKS_FILE):
                 with open(TASKS_FILE, "rb") as f:
-                    encrypted_data = f.read()
-                if encrypted_data:
-                    self.fernet.decrypt(encrypted_data)
+                    encrypted = f.read()
+                if encrypted:
+                    self.fernet.decrypt(encrypted)
             return True
-        except (InvalidToken, Exception):
+        except:
             return False
 
-    def save_tasks(self, tasks: List[Task]) -> None:
+    def save_tasks(self, tasks: List[Task]):
         if not self.fernet:
             raise RuntimeError("Storage not unlocked")
         data = json.dumps([t.to_dict() for t in tasks], ensure_ascii=False, indent=2)
-        encrypted = self.fernet.encrypt(data.encode("utf-8"))
+        encrypted = self.fernet.encrypt(data.encode())
         with open(TASKS_FILE, "wb") as f:
             f.write(encrypted)
 
     def load_tasks(self) -> List[Task]:
         if not os.path.exists(TASKS_FILE):
             return []
-        if not self.fernet:
-            raise RuntimeError("Storage not unlocked")
         try:
             with open(TASKS_FILE, "rb") as f:
                 decrypted = self.fernet.decrypt(f.read())
-            tasks_data = json.loads(decrypted.decode("utf-8"))
-            return [Task.from_dict(t) for t in tasks_data]
-        except (InvalidTag, InvalidToken, json.JSONDecodeError):
-            messagebox.showerror("خطا", "رمز عبور اشتباه یا فایل خراب است.")
+            return [Task.from_dict(t) for t in json.loads(decrypted.decode())]
+        except:
+            ctk.CTkMessagebox(title="Error", message="Wrong password or file corrupted.", icon="cancel")
             return []
 
-# ====================== بقیه کد ======================
+
 class EisenhowerApp:
-    def __init__(self, root: Tk):
-        self.root = root
-        self.root.title("Eisenhower Matrix 5×5 - Secure & Professional")
-        self.root.geometry("1400x900")
-        self.root.minsize(1000, 700)
-        self.root.configure(bg="#f8f9fa")
+    def __init__(self):
+        self.root = ctk.CTk()
+        self.root.title("Eisenhower Matrix Pro")
+        self.root.geometry("1500x900")
+        self.root.minsize(1100, 700)
+
         self.storage = SecureStorage()
         self.tasks: List[Task] = []
-        self.cells: Dict[tuple, Frame] = {}
-        self.task_labels: Dict[str, Label] = {}
-        self.drag_task = None
-        self.authenticate_and_start()
+        self.cells: Dict[tuple, ctk.CTkScrollableFrame] = {}
+        self.task_widgets: Dict[str, ctk.CTkFrame] = {}
+        self.search_entry = None
 
+        self.drag_data = {"task": None, "widget": None, "offset_x": 0, "offset_y": 0}
 
-    def on_task_press(self, event, task: Task):
-        # ذخیره موقعیت کلیک و زمان
-        self.drag_task = task
-        self.click_x = event.x_root
-        self.click_y = event.y_root
-        self.click_time = event.time
-        # برای جلوگیری از تداخل، cursor رو فعلاً تغییر نده
-
-    def on_task_release(self, event, task: Task):
-        # اگر ماوس خیلی کم حرکت کرده و زمان کم گذشته → کلیک ساده است → ادیت
-        dx = abs(event.x_root - self.click_x)
-        dy = abs(event.y_root - self.click_y)
-        dt = event.time - self.click_time
-
-        if dx < 8 and dy < 8 and dt < 400:  # کلیک ساده (کمتر از ۴۰۰ میلی‌ثانیه و ۸ پیکسل)
-            self.edit_task(task)
-
-        # ریست کردن برای درگ بعدی
-        self.drag_task = None
-
-    def on_task_drag(self, event):
-        if not self.drag_task:
-            return
-        # اگر واقعاً درگ شد، نشانگر عوض شود
-        event.widget.config(cursor="fleur")
-
-
-    def on_drop(self, event):
-        if not self.drag_task:
+        if not self.authenticate_and_start():
             return
 
-        dropped = False
-        for (u, i), frame in self.cells.items():
-            widget_under = event.widget.winfo_containing(event.x_root, event.y_root)
-            if widget_under and (widget_under == frame or widget_under.winfo_parent() == str(frame)):
-                self.drag_task.urgency = u
-                self.drag_task.importance = i
-                dropped = True
-                break
+        self.setup_ui()
+        self.root.mainloop()
 
-        if dropped:
-            self.save_tasks()
-            self.refresh_matrix()
-
-        self.drag_task = None
-        event.widget.config(cursor="hand2")
-    def authenticate_and_start(self):
+    def authenticate_and_start(self) -> bool:
         if os.path.exists(TASKS_FILE):
             for _ in range(3):
-                password = simpledialog.askstring("رمز عبور", "رمز عبور را وارد کنید:", show='*')
-                if password is None:
-                    exit()
-                if self.authenticate(password):
-                    self.setup_ui()
-                    return
-            messagebox.showerror("خطا", "رمز عبور اشتباه است. برنامه بسته می‌شود.")
-            exit()
+                pwd = self.show_password_dialog("Enter Password", "Login to Eisenhower Matrix")
+                if pwd is None:
+                    return False
+                if self.storage.unlock(pwd):
+                    self.tasks = self.storage.load_tasks()
+                    return True
+            ctk.CTkMessagebox(title="Error", message="Incorrect password. Access denied.", icon="cancel")
+            return False
         else:
-            password = simpledialog.askstring("ایجاد رمز عبور", "رمز عبور جدید تنظیم کنید (حداقل ۶ کاراکتر):", show='*')
-            if not password or len(password) < 6:
-                messagebox.showerror("خطا", "رمز عبور باید حداقل ۶ کاراکتر باشد.")
-                exit()
-            confirm = simpledialog.askstring("تأیید رمز", "رمز عبور را دوباره وارد کنید:", show='*')
-            if password != confirm:
-                messagebox.showerror("خطا", "رمز عبورها یکسان نیستند.")
-                exit()
-            if self.authenticate(password):
-                self.setup_ui()
+            while True:
+                pwd = self.show_password_dialog("Set New Password (min 6 chars)", "Create Password")
+                if pwd is None:
+                    return False
+                if len(pwd) < 6:
+                    ctk.CTkMessagebox(title="Error", message="Password must be at least 6 characters.", icon="warning")
+                    continue
+                confirm = self.show_password_dialog("Confirm Password", "Confirm")
+                if pwd != confirm:
+                    ctk.CTkMessagebox(title="Error", message="Passwords do not match.", icon="warning")
+                    continue
+                if self.storage.unlock(pwd):
+                    self.storage.save_tasks([])
+                    return True
 
-    def authenticate(self, password: str) -> bool:
-        if self.storage.unlock(password):
-            self.tasks = self.storage.load_tasks()
-            return True
-        return False
+    def show_password_dialog(self, label_text: str, title: str) -> str | None:
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("420x300")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.attributes("-topmost", True)
+
+        ctk.CTkLabel(dialog, text="lock", font=ctk.CTkFont(size=60)).pack(pady=(30,10))
+        ctk.CTkLabel(dialog, text=label_text, font=ctk.CTkFont(size=16)).pack(pady=(0,20))
+
+        entry = ctk.CTkEntry(dialog, width=320, height=50, show="•", font=ctk.CTkFont(size=18), corner_radius=15)
+        entry.pack(pady=10)
+        entry.focus()
+
+        result = None
+
+        def ok():
+            nonlocal result
+            result = entry.get()
+            dialog.destroy()
+
+        def cancel():
+            nonlocal result
+            result = None
+            dialog.destroy()
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=20)
+
+        ctk.CTkButton(btn_frame, text="Cancel", width=130, command=cancel, fg_color="gray30").pack(side="left", padx=15)
+        ctk.CTkButton(btn_frame, text="OK", width=130, command=ok, fg_color="#1f6aa5").pack(side="right", padx=15)
+
+        dialog.bind("<Return>", lambda e: ok())
+        dialog.bind("<Escape>", lambda e: cancel())
+
+        dialog.wait_window()
+        return result
 
     def setup_ui(self):
-        Label(self.root, text="Eisenhower Matrix 5×5", font=("Segoe UI", 28, "bold"), bg="#f8f9fa", fg="#2d3436").pack(pady=(20, 5))
-        Label(self.root, text="Drag & Drop • Left Click: Edit • Right Click: Delete • Hover: Tooltip", font=("Segoe UI", 10), bg="#f8f9fa", fg="#636e72").pack(pady=(0, 15))
+        # Header
+        header = ctk.CTkFrame(self.root, fg_color="transparent")
+        header.pack(pady=20, fill="x", padx=40)
 
-        toolbar = Frame(self.root, bg="#f8f9fa")
-        toolbar.pack(pady=10)
-        ttk.Button(toolbar, text=" Add Task ", command=self.add_task).pack(side=LEFT, padx=8)
-        ttk.Button(toolbar, text=" Clear All ", command=self.clear_all).pack(side=LEFT, padx=8)
-        ttk.Button(toolbar, text=" Change Password ", command=self.change_password).pack(side=LEFT, padx=8)
+        ctk.CTkLabel(header, text="Eisenhower Matrix 5×5", font=ctk.CTkFont(size=40, weight="bold")).pack()
+        ctk.CTkLabel(header, text="Left Click: Edit • Right Click: Delete • Drag & Drop: Move",
+                     font=ctk.CTkFont(size=15), text_color="gray60").pack(pady=(8,0))
 
-        search_frame = Frame(self.root, bg="#f8f9fa")
-        search_frame.pack(pady=10)
-        Label(search_frame, text="جستجو:", bg="#f8f9fa", anchor="e").pack(side=LEFT)
-        self.search_var = StringVar()
-        self.search_var.trace("w", lambda *_: self.refresh_matrix())
-        ttk.Entry(search_frame, textvariable=self.search_var, width=40).pack(side=LEFT, padx=10)
+        # Toolbar
+        toolbar = ctk.CTkFrame(self.root)
+        toolbar.pack(fill="x", padx=40, pady=(0,20))
 
-        self.matrix_frame = Frame(self.root, bg="#f8f9fa")
-        self.matrix_frame.pack(padx=40, pady=30, fill="both", expand=True)
-        self.build_matrix_grid()
+        ctk.CTkButton(toolbar, text="Add Task", width=200, height=50,
+                      command=self.add_task, font=ctk.CTkFont(size=16), corner_radius=12).pack(side="left", padx=12, pady=10)
+        ctk.CTkButton(toolbar, text="Clear All", width=160, height=50,
+                      command=self.clear_all, corner_radius=12).pack(side="left", padx=8, pady=10)
+        ctk.CTkButton(toolbar, text="Change Password", width=180, height=50,
+                      command=self.change_password, corner_radius=12).pack(side="left", padx=8, pady=10)
+
+        self.search_entry = ctk.CTkEntry(toolbar, placeholder_text="Search tasks...", width=400, height=50,
+                                         font=ctk.CTkFont(size=16), corner_radius=12)
+        self.search_entry.pack(side="right", padx=20, pady=10)
+        self.search_entry.bind("<KeyRelease>", lambda e: self.refresh_matrix())
+
+        # Matrix container
+        matrix_container = ctk.CTkFrame(self.root)
+        matrix_container.pack(fill="both", expand=True, padx=40, pady=10)
+
+        grid_frame = ctk.CTkFrame(matrix_container, fg_color="transparent")
+        grid_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Header
+        ctk.CTkLabel(grid_frame, text="Importance ↓    |    Urgency →", font=ctk.CTkFont(size=18, weight="bold"),
+                     fg_color="#2c3e50", text_color="white", corner_radius=10, pady=15
+                     ).grid(row=0, column=1, columnspan=5, sticky="ew", pady=(0,15))
+
+        # Urgency headers
+        for i, text in enumerate(["1 Very Low", "2 Low", "3 Medium", "4 High", "5 Very High"]):
+            ctk.CTkLabel(grid_frame, text=text, font=ctk.CTkFont(size=13, weight="bold"),
+                         fg_color="#34495e", text_color="white", corner_radius=8).grid(row=1, column=i+1, sticky="nsew", padx=5, pady=5)
+
+        # Importance headers
+        for i, text in enumerate(["5 Very High", "4 High", "3 Medium", "2 Low", "1 Very Low"]):
+            ctk.CTkLabel(grid_frame, text=text, font=ctk.CTkFont(size=13, weight="bold"),
+                         fg_color="#34495e", text_color="white", corner_radius=8).grid(row=i+2, column=0, sticky="nsew", padx=5, pady=5)
+
+        # Colors
+        colors = {
+            (1,5): "#e3fcec", (2,5): "#b5e8cc", (3,5): "#80d6a3", (4,5): "#4db683", (5,5): "#1b9e6c",
+            (1,4): "#e8f5e9", (2,4): "#c8e6c9", (3,4): "#a7d8b0", (4,4): "#81c784", (5,4): "#43a047",
+            (1,3): "#fffde7", (2,3): "#fff59d", (3,3): "#fff176", (4,3): "#ffee58", (5,3): "#fdd835",
+            (1,2): "#fff3e0", (2,2): "#ffccbc", (3,2): "#ffab91", (4,2): "#ff8a65", (5,2): "#ff7043",
+            (1,1): "#ffebee", (2,1): "#ffcdd2", (3,1): "#ef9a9a", (4,1): "#e57373", (5,1): "#f44336",
+        }
+
+        # Create cells
+        for urgency in range(1, 6):
+            for importance in range(5, 0, -1):
+                cell = ctk.CTkScrollableFrame(grid_frame, fg_color=colors.get((urgency, importance), "#f0f0f0"),
+                                             corner_radius=15, border_width=2, border_color="#bdc3c7")
+                cell.grid(row=6-importance+1, column=urgency, padx=10, pady=10, sticky="nsew")
+                self.cells[(urgency, importance)] = cell
+
+        for i in range(6):
+            grid_frame.grid_columnconfigure(i, weight=1)
+            if i > 0:
+                grid_frame.grid_rowconfigure(i+1, weight=1)
+
         self.refresh_matrix()
 
-    def get_pastel_color(self, i: int, u: int) -> str:
-        s = i + u
-        return ["#b2dfdb","#c8e6c9","#dcedc8","#ffbbbb","#ff9e9e","#ff8a80","#ff6b6b","#ff5252"][min(s-2,7)]
-
-    def build_matrix_grid(self):
-        Label(self.matrix_frame, text="Eisenhower Matrix", font=("Segoe UI", 18, "bold"), bg="#f8f9fa", fg="#2d3436").grid(row=0, column=0, columnspan=7, pady=20)
-        Label(self.matrix_frame, text="Importance ↓\nUrgency →", bg="#2d3436", fg="white", font=("Segoe UI", 11, "bold")).grid(row=1, column=0, sticky="nsew")
-        for c, t in enumerate(["1 Not Urgent","2 Low","3 Medium","4 Urgent","5 Very Urgent"], 1):
-            Label(self.matrix_frame, text=t, bg="#2d3436", fg="white", font=("Segoe UI", 10, "bold")).grid(row=1, column=c, sticky="nsew")
-        for r, t in enumerate(["5 Very Imp.","4 Imp.","3 Med.","2 Low","1 Not Imp."], 2):
-            Label(self.matrix_frame, text=t, bg="#2d3436", fg="white", font=("Segoe UI", 10, "bold")).grid(row=r, column=0, sticky="nsew")
-        for u in range(1,6):
-            for i in range(5,0,-1):
-                cell = Frame(self.matrix_frame, bg=self.get_pastel_color(i,u), highlightbackground="#dfe6e9", highlightthickness=2)
-                cell.grid(row=7-i, column=u, padx=8, pady=8, sticky="nsew")
-                canvas_cell = Canvas(cell, bg=cell["bg"], highlightthickness=0)
-                scroll = ttk.Scrollbar(cell, orient="vertical", command=canvas_cell.yview)
-                inner = Frame(canvas_cell, bg=cell["bg"])
-                canvas_cell.create_window((0,0), window=inner, anchor="nw")
-                canvas_cell.configure(yscrollcommand=scroll.set)
-                canvas_cell.pack(side="left", fill="both", expand=True)
-                scroll.pack(side="right", fill="y")
-                inner.bind("<Configure>", lambda e, c=canvas_cell: c.configure(scrollregion=c.bbox("all")))
-                inner.bind("<Configure>", lambda e, inn=inner: self.update_wraplengths(inn))
-                self.cells[(u, i)] = inner
-        for j in range(7):
-            self.matrix_frame.grid_columnconfigure(j, weight=1)
-        for j in range(1,7):
-            self.matrix_frame.grid_rowconfigure(j, weight=1)
-
-    def update_wraplengths(self, inner):
-        width = inner.winfo_width() - 20
-        for child in inner.winfo_children():
-            if isinstance(child, Label) and child.cget("text").startswith("• "):
-                child.config(wraplength=max(100, width))
-    def on_drop(self, event):
-        if not self.drag_task:
-            return
-
-        dropped = False
-        for (u, i), frame in self.cells.items():
-            widget_under = event.widget.winfo_containing(event.x_root, event.y_root)
-            if widget_under and (widget_under == frame or str(widget_under.master) == str(frame)):
-                self.drag_task.urgency = u
-                self.drag_task.importance = i
-                dropped = True
-                break
-
-        if dropped:
-            self.save_tasks()
-            self.refresh_matrix()
-
-        self.drag_task = None
-        event.widget.config(cursor="hand2")
-
     def refresh_matrix(self):
-        search = self.search_var.get().lower()
+        search_text = self.search_entry.get().lower() if self.search_entry else ""
 
-        # پاک کردن لیبل‌های قبلی
-        for lbl in list(self.task_labels.values()):
-            lbl.destroy()
-        self.task_labels.clear()
+        for widget in self.task_widgets.values():
+            widget.destroy()
+        self.task_widgets.clear()
 
-        for (u, i), frame in self.cells.items():
-            for w in list(frame.winfo_children()):
+        for (u, i), cell in self.cells.items():
+            for w in cell.winfo_children():
                 w.destroy()
 
             tasks_here = [t for t in self.tasks
                           if t.urgency == u and t.importance == i
-                          and (not search or search in t.name.lower() or search in t.id.lower())]
+                          and (not search_text or search_text in t.name.lower())]
 
             if not tasks_here:
-                Label(frame, text="Drop tasks here", bg=frame["bg"], fg="#95a5a6",
-                      font=("Segoe UI", 11, "italic")).pack(pady=30)
+                ctk.CTkLabel(cell, text="Drop tasks here", text_color="gray50",
+                             font=ctk.CTkFont(size=15, slant="italic")).pack(pady=30)
             else:
-                Label(frame, text=f"{len(tasks_here)} task{'s' if len(tasks_here) > 1 else ''}",
-                      bg=frame["bg"], fg="#2d3436", font=("Segoe UI", 9, "bold")
-                      ).pack(anchor="nw", padx=8, pady=(8, 4))
+                ctk.CTkLabel(cell, text=f"{len(tasks_here)} task{'s' if len(tasks_here)>1 else ''}",
+                             font=ctk.CTkFont(size=12, weight="bold"), text_color="#2c3e50"
+                             ).pack(anchor="nw", padx=15, pady=(15,5))
 
                 for task in tasks_here:
-                    lbl = Label(
-                        frame,
-                        text="• " + task.name,
-                        bg=frame["bg"],
-                        fg="#2d3436",
-                        font=("Segoe UI", 10),
-                        anchor="e",
-                        justify="right",
-                        cursor="hand2"
-                    )
-                    lbl.pack(anchor="e", padx=10, pady=1, fill="x")
+                    card = ctk.CTkFrame(cell, fg_color="white", corner_radius=14, cursor="hand2")
+                    card.pack(pady=8, padx=15, fill="x", ipady=12)
 
-                    # کلیک ساده → ویرایش
-                    lbl.bind("<ButtonPress-1>", lambda e, t=task: self.on_task_press(e, t))
-                    lbl.bind("<ButtonRelease-1>", lambda e, t=task: self.on_task_release(e, t))
-                    lbl.bind("<B1-Motion>", lambda e: self.on_task_drag(e))
+                    ctk.CTkLabel(card, text=task.name, font=ctk.CTkFont(size=16, weight="bold"),
+                                 text_color="#2c3e50", anchor="w", padx=20).pack(fill="x")
 
-                    # کلیک راست → حذف
-                    lbl.bind("<Button-3>", lambda e, t=task: self.delete_task(t))
+                    card.bind("<Button-1>", lambda e, t=task: self.edit_task(t))
+                    card.bind("<Button-3>", lambda e, t=task: self.delete_task(t))
+                    card.bind("<ButtonPress-1>", lambda e, w=card, t=task: self.start_drag(e, w, t))
+                    card.bind("<B1-Motion>", self.do_drag)
+                    card.bind("<ButtonRelease-1>", self.drop)
 
-                    ToolTip(lbl, "کلیک: ویرایش • کلیک راست: حذف • بکشید: جابجایی")
-                    self.task_labels[task.id] = lbl
+                    card.bind("<Enter>", lambda e, c=card: c.configure(fg_color="#f0f8ff"))
+                    card.bind("<Leave>", lambda e, c=card: c.configure(fg_color="white"))
 
-        # بروزرسانی wraplength بعد از رندر شدن ویجت‌ها
-        self.root.after(100, self._update_all_wraplengths)
+                    self.task_widgets[task.id] = card
 
-    def _update_all_wraplengths(self):
-        for inner in self.cells.values():
-            self.update_wraplengths(inner)
+    def start_drag(self, event, widget, task):
+        self.drag_data["task"] = task
+        self.drag_data["widget"] = widget
+        self.drag_data["offset_x"] = event.x
+        self.drag_data["offset_y"] = event.y
+        widget.lift()
 
+    def do_drag(self, event):
+        if self.drag_data["widget"]:
+            x = self.root.winfo_pointerx() - self.drag_data["offset_x"]
+            y = self.root.winfo_pointery() - self.drag_data["offset_y"]
+            self.drag_data["widget"].place(x=x, y=y)
+
+    def drop(self, event):
+        if not self.drag_data["task"]:
+            return
+
+        x, y = self.root.winfo_pointerx(), self.root.winfo_pointery()
+        for (u, i), cell in self.cells.items():
+            if (cell.winfo_rootx() < x < cell.winfo_rootx() + cell.winfo_width() and
+                cell.winfo_rooty() < y < cell.winfo_rooty() + cell.winfo_height()):
+                self.drag_data["task"].urgency = u
+                self.drag_data["task"].importance = i
+                self.storage.save_tasks(self.tasks)
+                self.refresh_matrix()
+                break
+
+        if self.drag_data["widget"]:
+            self.drag_data["widget"].place_forget()
+        self.drag_data = {"task": None, "widget": None}
 
     def add_task(self):
-        self.edit_task(Task("", 3, 3))
+        self.edit_task(Task(""))
 
     def edit_task(self, task: Task):
-        modal = Toplevel(self.root)
-        modal.title("New Task" if not task.name else "Edit Task")
-        modal.geometry("440x560")
-        modal.configure(bg="#f8f9fa")
-        modal.transient(self.root)
-        modal.grab_set()
-        Label(modal, text="Task Name", bg="#f8f9fa", font=("Segoe UI", 11), anchor="w").pack(anchor="w", padx=50, pady=(40,5))
-        name_entry = ttk.Entry(modal, font=("Segoe UI", 12), width=40)
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Edit Task" if task.name else "New Task")
+        dialog.geometry("520x620")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="Task Name", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(40,10), padx=50, anchor="w")
+        name_entry = ctk.CTkEntry(dialog, font=ctk.CTkFont(size=18), height=50, corner_radius=12)
+        name_entry.pack(pady=10, padx=50, fill="x")
         name_entry.insert(0, task.name)
-        name_entry.pack(pady=10, padx=50)
         name_entry.focus()
-        Label(modal, text="Urgency", bg="#f8f9fa", fg="#e74c3c", font=("Segoe UI", 11, "bold"), anchor="w").pack(anchor="w", padx=50, pady=(30,5))
-        uv = IntVar(value=task.urgency)
-        ttk.Scale(modal, from_=1, to=5, variable=uv, length=320).pack(padx=50)
-        Label(modal, text="Not Urgent ← → Very Urgent", fg="#7f8c8d", bg="#f8f9fa").pack()
-        Label(modal, text="Importance", bg="#f8f9fa", fg="#27ae60", font=("Segoe UI", 11, "bold"), anchor="w").pack(anchor="w", padx=50, pady=(30,5))
-        iv = IntVar(value=task.importance)
-        ttk.Scale(modal, from_=1, to=5, variable=iv, length=320).pack(padx=50)
-        Label(modal, text="Not Important ← → Very Important", fg="#7f8c8d", bg="#f8f9fa").pack()
+
+        ctk.CTkLabel(dialog, text="Urgency", font=ctk.CTkFont(size=16), text_color="#e74c3c").pack(pady=(30,8), padx=50, anchor="w")
+        urgency = ctk.CTkSlider(dialog, from_=1, to=5, number_of_steps=4)
+        urgency.set(task.urgency)
+        urgency.pack(pady=10, padx=50, fill="x")
+
+        ctk.CTkLabel(dialog, text="Importance", font=ctk.CTkFont(size=16), text_color="#27ae60").pack(pady=(25,8), padx=50, anchor="w")
+        importance = ctk.CTkSlider(dialog, from_=1, to=5, number_of_steps=4)
+        importance.set(task.importance)
+        importance.pack(pady=10, padx=50, fill="x")
+
         def save():
-            n = name_entry.get().strip()
-            if not n:
-                messagebox.showerror("خطا", "نام تسک نمی‌تواند خالی باشد!")
+            name = name_entry.get().strip()
+            if not name:
+                ctk.CTkMessagebox.show_error("Task name cannot be empty!")
                 return
-            if any(t.name.lower() == n.lower() for t in self.tasks if t.id != task.id):
-                messagebox.showerror("خطا", "نام تسک تکراری است!")
+            if any(t.name.lower() == name.lower() for t in self.tasks if t.id != task.id):
+                ctk.CTkMessagebox.show_error("A task with this name already exists!")
                 return
-            task.name = n
-            task.urgency = uv.get()
-            task.importance = iv.get()
+
+            task.name = name
+            task.urgency = int(urgency.get())
+            task.importance = int(importance.get())
             if task.id not in [t.id for t in self.tasks]:
                 self.tasks.append(task)
-            self.save_tasks()
-            modal.destroy()
+
+            self.storage.save_tasks(self.tasks)
             self.refresh_matrix()
-        btns = Frame(modal, bg="#f8f9fa")
-        btns.pack(pady=40)
-        ttk.Button(btns, text="Cancel", command=modal.destroy).pack(side=LEFT, padx=20)
-        ttk.Button(btns, text="Save", command=save).pack(side=LEFT, padx=20)
-        modal.bind("<Return>", lambda e: save())
-        modal.bind("<Escape>", lambda e: modal.destroy())
+            dialog.destroy()
+
+        ctk.CTkButton(dialog, text="Save Changes", command=save, width=250, height=55,
+                     font=ctk.CTkFont(size=18, weight="bold"), corner_radius=15).pack(pady=40)
+        dialog.bind("<Return>", lambda e: save())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
 
     def delete_task(self, task: Task):
-        if messagebox.askyesno("حذف", f"حذف «{task.name}»؟"):
+        if ctk.CTkMessagebox.askyesno("Delete", f"Delete \"{task.name}\"?"):
             self.tasks = [t for t in self.tasks if t.id != task.id]
-            self.save_tasks()
+            self.storage.save_tasks(self.tasks)
             self.refresh_matrix()
 
     def clear_all(self):
-        if messagebox.askyesno("همه را پاک کن", "همه تسک‌ها حذف شوند؟"):
+        if ctk.CTkMessagebox.askyesno("Clear All", "Delete all tasks?"):
             self.tasks.clear()
-            self.save_tasks()
+            self.storage.save_tasks(self.tasks)
             self.refresh_matrix()
 
     def change_password(self):
-        old = simpledialog.askstring("رمز فعلی", "رمز عبور فعلی:", show='*')
-        if not self.authenticate(old):
-            messagebox.showerror("خطا", "رمز فعلی اشتباه است.")
-            return
-        new = simpledialog.askstring("رمز جدید", "رمز جدید (حداقل ۶ کاراکتر):", show='*')
-        if not new or len(new) < 6:
-            messagebox.showerror("خطا", "رمز جدید معتبر نیست.")
-            return
-        confirm = simpledialog.askstring("تأیید", "تکرار رمز جدید:", show='*')
-        if new != confirm:
-            messagebox.showerror("خطا", "رمز جدید مطابقت ندارد.")
-            return
-        # پشتیبان‌گیری
-        if os.path.exists(TASKS_FILE):
-            shutil.copy(TASKS_FILE, TASKS_FILE + ".bak")
-        old_salt = self.storage.salt
-        self.storage.salt = secrets.token_bytes(16)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump({"salt": self.storage.salt.hex()}, f)
-        if self.storage.unlock(new):
-            try:
-                self.storage.save_tasks(self.tasks)
-                messagebox.showinfo("موفق", "رمز عبور تغییر کرد.")
-            except Exception as e:
-                # بازگردانی در صورت شکست
-                self.storage.salt = old_salt
-                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                    json.dump({"salt": self.storage.salt.hex()}, f)
-                self.storage.unlock(old)
-                messagebox.showerror("خطا", f"خطا در تغییر رمز: {e}. رمز قبلی بازگردانده شد.")
-        else:
-            self.storage.salt = old_salt
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump({"salt": self.storage.salt.hex()}, f)
-            messagebox.showerror("خطا", "خطا در باز کردن با رمز جدید.")
+        ctk.CTkMessagebox.show_info("Coming Soon", "This feature will be added soon!")
 
-    def save_tasks(self):
-        try:
-            self.storage.save_tasks(self.tasks)
-        except (RuntimeError, ValueError, OSError) as e:
-            messagebox.showerror("خطا", f"خطا در ذخیره: {e}")
-
-class ToolTip:
-    def __init__(self, widget, text: str):
-        self.widget = widget
-        self.text = text
-        self.tip = None
-        widget.bind("<Enter>", self.show)
-        widget.bind("<Leave>", self.hide)
-
-    def show(self, event=None):
-        if self.tip:
-            return
-        x, y = self.widget.winfo_rootx() + 25, self.widget.winfo_rooty() + 25
-        self.tip = Toplevel(self.widget)
-        self.tip.wm_overrideredirect(True)
-        self.tip.wm_geometry(f"+{x}+{y}")
-        Label(self.tip, text=self.text, bg="#ffffe0", relief="solid", borderwidth=1, font=("Segoe UI", 9), padx=8, pady=4).pack()
-
-    def hide(self, event=None):
-        if self.tip:
-            self.tip.destroy()
-            self.tip = None
 
 if __name__ == "__main__":
     try:
         from argon2 import low_level
     except ImportError:
-        print("Please install argon2-cffi: pip install argon2-cffi")
+        print("Please run: pip install argon2-cffi customtkinter cryptography")
         exit()
-    root = Tk()
-    app = EisenhowerApp(root)
-    root.mainloop()
+    EisenhowerApp()
