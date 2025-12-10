@@ -8,6 +8,7 @@ import shutil
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 import customtkinter as ctk
+import tkinter.messagebox  # Correct import for messageboxes
 from argon2 import low_level
 from cryptography.fernet import Fernet
 from cryptography.exceptions import InvalidTag
@@ -19,7 +20,7 @@ import threading
 import time
 
 ctk.set_appearance_mode("System")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("dark-blue")  # Professional theme
 
 BACKUP_DIR = "backups"
 os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -32,7 +33,7 @@ class Task:
         self.urgency = urgency
         self.importance = importance
         self.description = description
-        self.due_date = due_date  # ISO format "YYYY-MM-DD"
+        self.due_date = due_date
         self.tags = tags or []
         self.order = order
         self.completed = completed
@@ -148,7 +149,7 @@ class SecureStorage:
                 decrypted = self.fernet.decrypt(f.read())
             return [Task.from_dict(t) for t in json.loads(decrypted.decode())]
         except:
-            ctk.messagebox.showerror("Error", "Wrong password or corrupted file.")
+            tkinter.messagebox.showerror("Error", "Wrong password or corrupted file.")
             return []
 
     def reset_data(self):
@@ -172,6 +173,7 @@ class EisenhowerApp:
         self.search_vars = {}
         self.all_tags = set()
         self.tag_combo_widget = None
+        self.status_label = None
 
         if not self.authenticate_and_start():
             self.root.destroy()
@@ -183,29 +185,47 @@ class EisenhowerApp:
 
     def select_profile(self) -> str | None:
         dialog = ctk.CTkToplevel()
-        dialog.title("Select or Create Profile")
-        dialog.geometry("400x300")
+        dialog.title("Profile Selection")
+        dialog.geometry("500x600")
         dialog.resizable(False, False)
         dialog.grab_set()
+        dialog.attributes("-topmost", True)
+
+        ctk.CTkLabel(dialog, text="Select a Profile or Create New", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
+
+        frame = ctk.CTkScrollableFrame(dialog, width=450, height=350)
+        frame.pack(pady=10, padx=40, fill="both", expand=True)
 
         profiles = [f[len("profile_"):-len("_config.json")] for f in os.listdir() if f.endswith("_config.json")]
 
-        var = ctk.StringVar(value=profiles[0] if profiles else "")
-        if profiles:
-            ctk.CTkOptionMenu(dialog, values=profiles, variable=var).pack(pady=20, padx=40, fill="x")
+        selected = [None]
 
-        entry = ctk.CTkEntry(dialog, placeholder_text="Enter new profile name")
-        entry.pack(pady=10, padx=40, fill="x")
-
-        result = [None]
-        def ok():
-            name = entry.get().strip() or var.get()
-            if name:
-                result[0] = name
+        def choose_profile(name):
+            selected[0] = name
             dialog.destroy()
-        ctk.CTkButton(dialog, text="OK", command=ok, width=200).pack(pady=20)
+
+        if profiles:
+            for p in sorted(profiles):
+                btn = ctk.CTkButton(frame, text=p, width=400, height=50, font=ctk.CTkFont(size=16),
+                                    command=lambda n=p: choose_profile(n))
+                btn.pack(pady=8, padx=20)
+        else:
+            ctk.CTkLabel(frame, text="No profiles found.", font=ctk.CTkFont(size=14, slant="italic")).pack(pady=50)
+
+        def create_new():
+            new_name = tkinter.simpledialog.askstring("New Profile", "Enter profile name:", parent=dialog)
+            if new_name and new_name.strip():
+                selected[0] = new_name.strip()
+                dialog.destroy()
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        ctk.CTkButton(btn_frame, text="Create New Profile", command=create_new, width=200, height=45,
+                      font=ctk.CTkFont(size=16)).pack(side="left", padx=20)
+        ctk.CTkButton(btn_frame, text="Cancel", command=dialog.destroy, width=150, height=45).pack(side="right", padx=20)
+
         dialog.wait_window()
-        return result[0]
+        return selected[0]
 
     def authenticate_and_start(self) -> bool:
         ctk.set_appearance_mode(self.storage.appearance)
@@ -219,7 +239,7 @@ class EisenhowerApp:
                 if self.storage.unlock(pwd):
                     self.tasks = self.storage.load_tasks()
                     return True
-            if ctk.messagebox.askyesno("Reset Data?", "Too many attempts. Reset profile data?"):
+            if tkinter.messagebox.askyesno("Reset Data?", "Too many attempts. Reset profile data?"):
                 self.storage.reset_data()
                 return self.authenticate_and_start()
             return False
@@ -229,11 +249,11 @@ class EisenhowerApp:
                 if pwd is None or len(pwd) < 6:
                     if pwd is None:
                         return False
-                    ctk.messagebox.showwarning("Error", "Password must be at least 6 characters.")
+                    tkinter.messagebox.showwarning("Error", "Password must be at least 6 characters.")
                     continue
                 confirm = self.show_password_dialog("Confirm Password", "Confirm")
                 if pwd != confirm:
-                    ctk.messagebox.showwarning("Error", "Passwords do not match.")
+                    tkinter.messagebox.showwarning("Error", "Passwords do not match.")
                     continue
                 self.storage.unlock(pwd)
                 self.storage.save_tasks([])
@@ -274,54 +294,57 @@ class EisenhowerApp:
 
     def setup_ui(self):
         self.root.title(f"Eisenhower Matrix Pro - {self.profile}")
-        self.root.minsize(1100, 700)
+        self.root.minsize(1200, 750)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        # Header with progress
+        # Header
         header = ctk.CTkFrame(self.root, fg_color="transparent")
         header.pack(pady=20, fill="x", padx=40)
-        self.title_label = ctk.CTkLabel(header, text="Eisenhower Matrix 5×5", font=ctk.CTkFont(size=40, weight="bold"))
-        self.title_label.pack(side="left")
-        self.progress_label = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=20))
+        ctk.CTkLabel(header, text="Eisenhower Matrix 5×5", font=ctk.CTkFont(size=42, weight="bold")).pack(side="left")
+        self.progress_label = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=22))
         self.progress_label.pack(side="right")
 
         # Toolbar
         toolbar = ctk.CTkFrame(self.root)
-        toolbar.pack(fill="x", padx=40, pady=(0, 20))
+        toolbar.pack(fill="x", padx=40, pady=(0, 15))
 
-        ctk.CTkButton(toolbar, text="Add Task", command=self.add_task, width=140).pack(side="left", padx=5)
-        ctk.CTkButton(toolbar, text="Toggle Completed Tasks", command=self.toggle_hide_completed, width=200).pack(side="left", padx=5)
-        ctk.CTkButton(toolbar, text="Export", command=self.export_tasks, width=120).pack(side="left", padx=5)
-        ctk.CTkButton(toolbar, text="Import", command=self.import_tasks, width=120).pack(side="left", padx=5)
-        ctk.CTkButton(toolbar, text="Restore Backup", command=self.restore_backup, width=140).pack(side="left", padx=5)
-        ctk.CTkButton(toolbar, text="Change Password", command=self.change_password, width=160).pack(side="left", padx=5)
-        ctk.CTkButton(toolbar, text="Statistics", command=self.show_statistics, width=120).pack(side="left", padx=5)
+        buttons = [
+            ("Add Task", self.add_task, 150),
+            ("Toggle Completed", self.toggle_hide_completed, 220),
+            ("Export", self.export_tasks, 130),
+            ("Import", self.import_tasks, 130),
+            ("Restore Backup", self.restore_backup, 160),
+            ("Change Password", self.change_password, 180),
+            ("Statistics", self.show_statistics, 140),
+        ]
+        for text, cmd, w in buttons:
+            ctk.CTkButton(toolbar, text=text, command=cmd, width=w, height=40, font=ctk.CTkFont(size=14)).pack(side="left", padx=6)
 
-        # Search and filters
+        # Search & Filters
         search_frame = ctk.CTkFrame(toolbar)
         search_frame.pack(side="right", padx=10)
 
-        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="Search tasks...", width=250)
+        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="Search tasks...", width=280, height=40)
         self.search_entry.pack(side="left", padx=5)
         self.search_entry.bind("<KeyRelease>", lambda e: self.refresh_matrix())
 
         filter_data = [
             ("Urgency", ["All", "1", "2", "3", "4", "5"]),
-            ("Importance", ["All", "1", "2", "3", "4", "5"]),
+            ("Importance", ["All", "1", "2", "3  ", "4", "5"]),
             ("Tags", ["All"]),
             ("Due Date", ["All", "Today", "This Week", "Overdue"])
         ]
         for label, values in filter_data:
             var = ctk.StringVar(value="All")
             self.search_vars[label.lower().replace(" ", "_")] = var
-            combo = ctk.CTkComboBox(search_frame, values=values, variable=var, width=130)
-            combo.pack(side="left", padx=3)
+            combo = ctk.CTkComboBox(search_frame, values=values, variable=var, width=140)
+            combo.pack(side="left", padx=4)
             combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_matrix())
-            ctk.CTkLabel(search_frame, text=label + ":", font=ctk.CTkFont(size=12)).pack(side="left", padx=2)
+            ctk.CTkLabel(search_frame, text=label, font=ctk.CTkFont(size=12)).pack(side="left", padx=2)
             if label == "Tags":
                 self.tag_combo_widget = combo
 
-        # Matrix
+        # Matrix (unchanged from previous version)
         matrix_container = ctk.CTkFrame(self.root)
         matrix_container.pack(fill="both", expand=True, padx=40, pady=10)
         grid_frame = ctk.CTkFrame(matrix_container, fg_color="transparent")
@@ -358,6 +381,12 @@ class EisenhowerApp:
         self.root.bind("<Control-f>", lambda e: self.search_entry.focus())
         self.root.bind("<Delete>", lambda e: self.delete_selected())
 
+        # Status bar
+        status_frame = ctk.CTkFrame(self.root, height=30, fg_color="transparent")
+        status_frame.pack(fill="x", side="bottom", pady=(0, 10))
+        self.status_label = ctk.CTkLabel(status_frame, text="Ready", font=ctk.CTkFont(size=12), text_color="gray60")
+        self.status_label.pack(side="left", padx=20)
+
         self.refresh_matrix()
         self.update_progress()
 
@@ -376,6 +405,8 @@ class EisenhowerApp:
         self.update_progress()
 
     def refresh_matrix(self):
+        if self.status_label:
+            self.status_label.configure(text="Refreshing matrix...")
         search_text = self.search_entry.get().lower()
         filters = {k: v.get() for k, v in self.search_vars.items()}
 
@@ -467,12 +498,14 @@ class EisenhowerApp:
                 ctk.CTkLabel(cell, text="Drop tasks here", text_color="gray50", font=ctk.CTkFont(slant="italic")).pack(pady=30)
 
         self.update_progress()
+        if self.status_label:
+            self.status_label.configure(text="Ready")
 
     def start_drag(self, widget, original_color, cell):
         self.drag_data["widget"] = widget
         self.drag_data["original_color"] = original_color
         self.drag_data["cell"] = cell
-        widget.configure(fg_color="#d0d0d0")  # تغییر رنگ برای شبیه‌سازی drag
+        widget.configure(fg_color="#d0d0d0")
         widget.lift()
 
     def drop(self, event):
@@ -559,7 +592,7 @@ class EisenhowerApp:
         def save():
             name = name_entry.get().strip()
             if not name:
-                ctk.messagebox.showerror("Error", "Task name is required.")
+                tkinter.messagebox.showerror("Error", "Task name is required.")
                 return
             task.name = name
             task.description = desc_text.get("1.0", "end").strip()
@@ -583,7 +616,7 @@ class EisenhowerApp:
         ctk.CTkButton(dialog, text="Save", command=save, width=200, height=40).pack(pady=30)
 
     def delete_task(self, task: Task):
-        if ctk.messagebox.askyesno("Delete Task", f"Delete task '{task.name}'?"):
+        if tkinter.messagebox.askyesno("Delete Task", f"Delete task '{task.name}'?"):
             self.tasks = [t for t in self.tasks if t.id != task.id]
             self.storage.save_tasks(self.tasks)
             self.refresh_matrix()
@@ -599,25 +632,25 @@ class EisenhowerApp:
     def change_password(self):
         old = self.show_password_dialog("Enter current password", "Change Password")
         if not old or not self.storage.unlock(old):
-            ctk.messagebox.showerror("Error", "Incorrect current password.")
+            tkinter.messagebox.showerror("Error", "Incorrect current password.")
             return
         new = self.show_password_dialog("Enter new password", "Change Password")
         if len(new) < 6:
-            ctk.messagebox.showwarning("Error", "Password too short.")
+            tkinter.messagebox.showwarning("Error", "Password too short.")
             return
         confirm = self.show_password_dialog("Confirm new password", "Change Password")
         if new != confirm:
-            ctk.messagebox.showerror("Error", "Passwords do not match.")
+            tkinter.messagebox.showerror("Error", "Passwords do not match.")
             return
         self.storage.change_password(old, new)
-        ctk.messagebox.showinfo("Success", "Password changed successfully.")
+        tkinter.messagebox.showinfo("Success", "Password changed successfully.")
 
     def export_tasks(self):
         path = ctk.filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump([t.to_dict() for t in self.tasks], f, ensure_ascii=False, indent=2)
-            ctk.messagebox.showinfo("Export", "Tasks exported successfully.")
+            tkinter.messagebox.showinfo("Export", "Tasks exported successfully.")
 
     def import_tasks(self):
         path = ctk.filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
@@ -628,12 +661,12 @@ class EisenhowerApp:
                 self.tasks.extend(imported)
                 self.storage.save_tasks(self.tasks)
                 self.refresh_matrix()
-            ctk.messagebox.showinfo("Import", "Tasks imported successfully.")
+            tkinter.messagebox.showinfo("Import", "Tasks imported successfully.")
 
     def restore_backup(self):
         backups = [f for f in os.listdir(BACKUP_DIR) if f.startswith(f"profile_{self.profile}_backup_")]
         if not backups:
-            ctk.messagebox.showinfo("Backup", "No backups found.")
+            tkinter.messagebox.showinfo("Backup", "No backups found.")
             return
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("Select Backup")
@@ -644,7 +677,7 @@ class EisenhowerApp:
 
     def perform_restore(self, backup_name, dialog):
         shutil.copy(os.path.join(BACKUP_DIR, backup_name), self.storage.tasks_file)
-        ctk.messagebox.showinfo("Restore", "Backup restored. Please restart the application.")
+        tkinter.messagebox.showinfo("Restore", "Backup restored. Please restart the application.")
         dialog.destroy()
 
     def show_statistics(self):
