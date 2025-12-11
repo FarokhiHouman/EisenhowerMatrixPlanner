@@ -5,10 +5,12 @@ import uuid
 import secrets
 import base64
 import shutil
-from typing import List, Dict, Any
+import re
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import customtkinter as ctk
-import tkinter.messagebox  # Correct import for messageboxes
+import tkinter.messagebox
+import tkinter.simpledialog  # برای fallback اگر لازم باشد
 from argon2 import low_level
 from cryptography.fernet import Fernet
 from cryptography.exceptions import InvalidTag
@@ -20,7 +22,7 @@ import threading
 import time
 
 ctk.set_appearance_mode("System")
-ctk.set_default_color_theme("dark-blue")  # Professional theme
+ctk.set_default_color_theme("dark-blue")
 
 BACKUP_DIR = "backups"
 os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -41,31 +43,17 @@ class Task:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "id": self.id,
-            "name": self.name,
-            "urgency": self.urgency,
-            "importance": self.importance,
-            "description": self.description,
-            "due_date": self.due_date,
-            "tags": self.tags,
-            "order": self.order,
-            "completed": self.completed,
-            "completed_date": self.completed_date
+            "id": self.id, "name": self.name, "urgency": self.urgency, "importance": self.importance,
+            "description": self.description, "due_date": self.due_date, "tags": self.tags,
+            "order": self.order, "completed": self.completed, "completed_date": self.completed_date
         }
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> 'Task':
         return Task(
-            data.get("name", ""),
-            data.get("urgency", 3),
-            data.get("importance", 3),
-            data.get("description", ""),
-            data.get("due_date"),
-            data.get("tags", []),
-            data.get("order", 0),
-            data.get("completed", False),
-            data.get("completed_date"),
-            data.get("id")
+            data.get("name", ""), data.get("urgency", 3), data.get("importance", 3),
+            data.get("description", ""), data.get("due_date"), data.get("tags", []),
+            data.get("order", 0), data.get("completed", False), data.get("completed_date"), data.get("id")
         )
 
 class SecureStorage:
@@ -78,6 +66,7 @@ class SecureStorage:
         self.appearance = "System"
         self.geometry = "1500x900"
         self.hide_completed = False
+        self.last_backup: Optional[str] = None
         self._load_or_create_config()
 
     def _load_or_create_config(self):
@@ -137,8 +126,9 @@ class SecureStorage:
         encrypted = self.fernet.encrypt(data.encode())
         with open(self.tasks_file, "wb") as f:
             f.write(encrypted)
-        today = datetime.now().strftime("%Y%m%d")
-        backup_file = os.path.join(BACKUP_DIR, f"profile_{self.profile}_backup_{today}.enc")
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.last_backup = today
+        backup_file = os.path.join(BACKUP_DIR, f"profile_{self.profile}_backup_{today.replace('-', '')}.enc")
         shutil.copy(self.tasks_file, backup_file)
 
     def load_tasks(self) -> List[Task]:
@@ -174,6 +164,8 @@ class EisenhowerApp:
         self.all_tags = set()
         self.tag_combo_widget = None
         self.status_label = None
+        self.backup_label = None
+        self.undo_stack: List[Dict] = []
 
         if not self.authenticate_and_start():
             self.root.destroy()
@@ -185,47 +177,91 @@ class EisenhowerApp:
 
     def select_profile(self) -> str | None:
         dialog = ctk.CTkToplevel()
-        dialog.title("Profile Selection")
-        dialog.geometry("500x600")
+        dialog.title("Profile Management")
+        dialog.geometry("560x680")
         dialog.resizable(False, False)
         dialog.grab_set()
         dialog.attributes("-topmost", True)
 
-        ctk.CTkLabel(dialog, text="Select a Profile or Create New", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
+        ctk.CTkLabel(dialog, text="Manage Profiles", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=20)
 
-        frame = ctk.CTkScrollableFrame(dialog, width=450, height=350)
-        frame.pack(pady=10, padx=40, fill="both", expand=True)
+        frame = ctk.CTkScrollableFrame(dialog)
+        frame.pack(pady=10, padx=30, fill="both", expand=True)
 
-        profiles = [f[len("profile_"):-len("_config.json")] for f in os.listdir() if f.endswith("_config.json")]
+        profiles = sorted([f[len("profile_"):-len("_config.json")] for f in os.listdir() if f.endswith("_config.json")])
 
         selected = [None]
 
-        def choose_profile(name):
-            selected[0] = name
-            dialog.destroy()
+        def refresh_list():
+            for w in frame.winfo_children():
+                w.destroy()
+            current = sorted([f[len("profile_"):-len("_config.json")] for f in os.listdir() if f.endswith("_config.json")])
+            if not current:
+                ctk.CTkLabel(frame, text="No profiles found.", font=ctk.CTkFont(size=14, slant="italic")).pack(pady=100)
+                return
+            for p in current:
+                row = ctk.CTkFrame(frame)
+                row.pack(fill="x", pady=6, padx=10)
+                ctk.CTkButton(row, text=p, width=320, height=50, font=ctk.CTkFont(size=16),
+                              command=lambda n=p: (selected.__setitem__(0, n), dialog.destroy())).pack(side="left", padx=5)
+                ctk.CTkButton(row, text="Rename", width=100, command=lambda n=p: rename_profile(n)).pack(side="left", padx=5)
+                ctk.CTkButton(row, text="Delete", width=100, fg_color="#c0392b", command=lambda n=p: delete_profile(n)).pack(side="left", padx=5)
 
-        if profiles:
-            for p in sorted(profiles):
-                btn = ctk.CTkButton(frame, text=p, width=400, height=50, font=ctk.CTkFont(size=16),
-                                    command=lambda n=p: choose_profile(n))
-                btn.pack(pady=8, padx=20)
-        else:
-            ctk.CTkLabel(frame, text="No profiles found.", font=ctk.CTkFont(size=14, slant="italic")).pack(pady=50)
+        def delete_profile(name):
+            if tkinter.messagebox.askyesno("Delete Profile", f"Permanently delete profile '{name}'?"):
+                for f in [f"profile_{name}_config.json", f"profile_{name}_tasks.enc"]:
+                    if os.path.exists(f):
+                        os.remove(f)
+                refresh_list()
+
+        def rename_profile(old):
+            new = self.input_dialog("Rename Profile", "New name:", old)
+            if new and new != old and re.match(r"^[a-zA-Z0-9_-]+$", new) and new not in profiles:
+                os.rename(f"profile_{old}_config.json", f"profile_{new}_config.json")
+                os.rename(f"profile_{old}_tasks.enc", f"profile_{new}_tasks.enc")
+                refresh_list()
+            elif new:
+                tkinter.messagebox.showerror("Invalid", "Name invalid or already exists.")
 
         def create_new():
-            new_name = tkinter.simpledialog.askstring("New Profile", "Enter profile name:", parent=dialog)
-            if new_name and new_name.strip():
-                selected[0] = new_name.strip()
+            name = self.input_dialog("New Profile", "Enter profile name:")
+            if name and re.match(r"^[a-zA-Z0-9_-]+$", name) and name not in profiles:
+                selected[0] = name
                 dialog.destroy()
+            elif name:
+                tkinter.messagebox.showerror("Invalid", "Name contains invalid characters or already exists.")
+
+        refresh_list()
 
         btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         btn_frame.pack(pady=20)
-        ctk.CTkButton(btn_frame, text="Create New Profile", command=create_new, width=200, height=45,
-                      font=ctk.CTkFont(size=16)).pack(side="left", padx=20)
-        ctk.CTkButton(btn_frame, text="Cancel", command=dialog.destroy, width=150, height=45).pack(side="right", padx=20)
+        ctk.CTkButton(btn_frame, text="Create New Profile", command=create_new, width=220, height=48, font=ctk.CTkFont(size=16)).pack(side="left", padx=20)
+        ctk.CTkButton(btn_frame, text="Cancel", command=dialog.destroy, width=150, height=48).pack(side="right", padx=20)
 
         dialog.wait_window()
         return selected[0]
+
+    def input_dialog(self, title: str, prompt: str, default: str = "") -> str | None:
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("400x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text=prompt, font=ctk.CTkFont(size=16)).pack(pady=20)
+        entry = ctk.CTkEntry(dialog, width=300)
+        entry.insert(0, default)
+        entry.pack(pady=10)
+        entry.focus()
+
+        result = [None]
+        def ok():
+            result[0] = entry.get().strip()
+            dialog.destroy()
+        ctk.CTkButton(dialog, text="OK", command=ok).pack(pady=10)
+        dialog.bind("<Return>", lambda e: ok())
+        dialog.wait_window()
+        return result[0]
 
     def authenticate_and_start(self) -> bool:
         ctk.set_appearance_mode(self.storage.appearance)
@@ -262,16 +298,17 @@ class EisenhowerApp:
     def show_password_dialog(self, label_text: str, title: str) -> str | None:
         dialog = ctk.CTkToplevel(self.root)
         dialog.title(title)
-        dialog.geometry("420x300")
+        dialog.geometry("450x350")
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.attributes("-topmost", True)
 
-        ctk.CTkLabel(dialog, text="🔒", font=ctk.CTkFont(size=60)).pack(pady=(30, 10))
-        ctk.CTkLabel(dialog, text=label_text, font=ctk.CTkFont(size=16)).pack(pady=(0, 20))
+        ctk.CTkLabel(dialog, text="🔒", font=ctk.CTkFont(size=70)).pack(pady=(20, 10))
+        ctk.CTkLabel(dialog, text=label_text, font=ctk.CTkFont(size=16)).pack(pady=(0, 10))
+        ctk.CTkLabel(dialog, text="Minimum 6 characters", font=ctk.CTkFont(size=12), text_color="gray60").pack(pady=(0, 20))
 
-        entry = ctk.CTkEntry(dialog, width=320, height=50, show="•", font=ctk.CTkFont(size=18))
+        entry = ctk.CTkEntry(dialog, width=340, height=50, show="•", font=ctk.CTkFont(size=18))
         entry.pack(pady=10)
         entry.focus()
 
@@ -284,8 +321,8 @@ class EisenhowerApp:
 
         btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         btn_frame.pack(pady=20)
-        ctk.CTkButton(btn_frame, text="Cancel", command=cancel, width=130).pack(side="left", padx=10)
-        ctk.CTkButton(btn_frame, text="OK", command=ok, width=130).pack(side="right", padx=10)
+        ctk.CTkButton(btn_frame, text="Cancel", command=cancel, width=140).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="OK", command=ok, width=140).pack(side="right", padx=10)
 
         dialog.bind("<Return>", lambda e: ok())
         dialog.bind("<Escape>", lambda e: cancel())
@@ -294,82 +331,94 @@ class EisenhowerApp:
 
     def setup_ui(self):
         self.root.title(f"Eisenhower Matrix Pro - {self.profile}")
-        self.root.minsize(1200, 750)
+        self.root.minsize(1300, 800)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # Header
         header = ctk.CTkFrame(self.root, fg_color="transparent")
         header.pack(pady=20, fill="x", padx=40)
-        ctk.CTkLabel(header, text="Eisenhower Matrix 5×5", font=ctk.CTkFont(size=42, weight="bold")).pack(side="left")
-        self.progress_label = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=22))
+        ctk.CTkLabel(header, text="Eisenhower Matrix 5×5", font=ctk.CTkFont(size=44, weight="bold")).pack(side="left")
+        self.progress_label = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=24))
         self.progress_label.pack(side="right")
 
         # Toolbar
         toolbar = ctk.CTkFrame(self.root)
         toolbar.pack(fill="x", padx=40, pady=(0, 15))
 
+        left_toolbar = ctk.CTkFrame(toolbar, fg_color="transparent")
+        left_toolbar.pack(side="left")
+
         buttons = [
-            ("Add Task", self.add_task, 150),
-            ("Toggle Completed", self.toggle_hide_completed, 220),
-            ("Export", self.export_tasks, 130),
-            ("Import", self.import_tasks, 130),
-            ("Restore Backup", self.restore_backup, 160),
-            ("Change Password", self.change_password, 180),
-            ("Statistics", self.show_statistics, 140),
+            ("Add Task", self.add_task, 160),
+            ("Toggle Completed", self.toggle_hide_completed, 240),
+            ("Export", self.export_tasks, 140),
+            ("Import", self.import_tasks, 140),
+            ("Restore Backup", self.restore_backup, 180),
+            ("Change Password", self.change_password, 200),
+            ("Statistics", self.show_statistics, 160),
         ]
         for text, cmd, w in buttons:
-            ctk.CTkButton(toolbar, text=text, command=cmd, width=w, height=40, font=ctk.CTkFont(size=14)).pack(side="left", padx=6)
+            ctk.CTkButton(left_toolbar, text=text, command=cmd, width=w, height=42, font=ctk.CTkFont(size=14)).pack(side="left", padx=7)
 
-        # Search & Filters
-        search_frame = ctk.CTkFrame(toolbar)
-        search_frame.pack(side="right", padx=10)
+        # Filter tab
+        filter_tab = ctk.CTkTabview(toolbar)
+        filter_tab.pack(side="right", padx=20)
+        filter_tab.add("Search & Filters")
 
-        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="Search tasks...", width=280, height=40)
-        self.search_entry.pack(side="left", padx=5)
+        filter_frame = filter_tab.tab("Search & Filters")
+
+        self.search_entry = ctk.CTkEntry(filter_frame, placeholder_text="Search tasks...", width=300, height=42)
+        self.search_entry.pack(pady=10, padx=20, fill="x")
         self.search_entry.bind("<KeyRelease>", lambda e: self.refresh_matrix())
+
+        filters_row = ctk.CTkFrame(filter_frame)
+        filters_row.pack(pady=10, padx=20, fill="x")
 
         filter_data = [
             ("Urgency", ["All", "1", "2", "3", "4", "5"]),
-            ("Importance", ["All", "1", "2", "3  ", "4", "5"]),
+            ("Importance", ["All", "1", "2", "3", "4", "5"]),
             ("Tags", ["All"]),
             ("Due Date", ["All", "Today", "This Week", "Overdue"])
         ]
         for label, values in filter_data:
+            ctk.CTkLabel(filters_row, text=label + ":", font=ctk.CTkFont(size=13)).grid(row=filter_data.index((label, values)), column=0, padx=10, sticky="e")
             var = ctk.StringVar(value="All")
             self.search_vars[label.lower().replace(" ", "_")] = var
-            combo = ctk.CTkComboBox(search_frame, values=values, variable=var, width=140)
-            combo.pack(side="left", padx=4)
+            combo = ctk.CTkComboBox(filters_row, values=values, variable=var, width=150)
+            combo.grid(row=filter_data.index((label, values)), column=1, padx=10)
             combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_matrix())
-            ctk.CTkLabel(search_frame, text=label, font=ctk.CTkFont(size=12)).pack(side="left", padx=2)
             if label == "Tags":
                 self.tag_combo_widget = combo
 
-        # Matrix (unchanged from previous version)
+        ctk.CTkButton(filter_frame, text="Reset Filters", command=self.reset_filters, width=200).pack(pady=10)
+
+        # Matrix
         matrix_container = ctk.CTkFrame(self.root)
         matrix_container.pack(fill="both", expand=True, padx=40, pady=10)
         grid_frame = ctk.CTkFrame(matrix_container, fg_color="transparent")
         grid_frame.pack(fill="both", expand=True)
 
-        ctk.CTkLabel(grid_frame, text="Importance ↓ | Urgency →", font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=1, columnspan=5, pady=10)
+        ctk.CTkLabel(grid_frame, text="Importance ↓ | Urgency →", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=1, columnspan=5, pady=15)
 
         for i, text in enumerate(["1 Very Low", "2 Low", "3 Medium", "4 High", "5 Very High"]):
-            ctk.CTkLabel(grid_frame, text=text, font=ctk.CTkFont(size=13, weight="bold"), fg_color="#34495e", text_color="white").grid(row=1, column=i+1, sticky="nsew", padx=5, pady=5)
+            ctk.CTkLabel(grid_frame, text=text, font=ctk.CTkFont(size=13, weight="bold"), fg_color="#2c3e50", text_color="white").grid(row=1, column=i+1, sticky="nsew", padx=5, pady=5)
 
         for i, text in enumerate(["5 Very High", "4 High", "3 Medium", "2 Low", "1 Very Low"]):
-            ctk.CTkLabel(grid_frame, text=text, font=ctk.CTkFont(size=13, weight="bold"), fg_color="#34495e", text_color="white").grid(row=i+2, column=0, sticky="nsew", padx=5, pady=5)
+            ctk.CTkLabel(grid_frame, text=text, font=ctk.CTkFont(size=13, weight="bold"), fg_color="#2c3e50", text_color="white").grid(row=i+2, column=0, sticky="nsew", padx=5, pady=5)
 
         colors = {
-            (1,5): "#e3fcec", (2,5): "#b5e8cc", (3,5): "#80d6a3", (4,5): "#4db683", (5,5): "#1b9e6c",
-            (1,4): "#e8f5e9", (2,4): "#c8e6c9", (3,4): "#a7d8b0", (4,4): "#81c784", (5,4): "#43a047",
-            (1,3): "#fffde7", (2,3): "#fff59d", (3,3): "#fff176", (4,3): "#ffee58", (5,3): "#fdd835",
-            (1,2): "#fff3e0", (2,2): "#ffccbc", (3,2): "#ffab91", (4,2): "#ff8a65", (5,2): "#ff7043",
-            (1,1): "#ffebee", (2,1): "#ffcdd2", (3,1): "#ef9a9a", (4,1): "#e57373", (5,1): "#f44336",
+            (1,5): "#d5f5e3", (2,5): "#a3e4d7", (3,5): "#73c6b6", (4,5): "#48c9b0", (5,5): "#1abc9c",
+            (1,4): "#d6eaf8", (2,4): "#a9cce3", (3,4): "#7fb3d5", (4,4): "#5499c7", (5,4): "#2980b9",
+            (1,3): "#fef9e7", (2,3): "#fcf3cf", (3,3): "#f9e79f", (4,3): "#f7dc6f", (5,3): "#f4d03f",
+            (1,2): "#fadbd8", (2,2): "#f5b7b1", (3,2): "#f1948a", (4,2): "#ec7063", (5,2): "#e74c3c",
+            (1,1): "#fadbd8", (2,1): "#f5b7b1", (3,1): "#f1948a", (4,1): "#ec7063", (5,1): "#c0392b",
         }
 
         for urgency in range(1, 6):
             for importance in range(5, 0, -1):
-                cell = ctk.CTkScrollableFrame(grid_frame, fg_color=colors.get((urgency, importance), "#f0f0f0"), corner_radius=15, border_width=2)
-                cell.grid(row=6-importance+1, column=urgency, padx=10, pady=10, sticky="nsew")
+                cell_color = colors.get((urgency, importance), "#f0f0f0")
+                cell = ctk.CTkScrollableFrame(grid_frame, fg_color=cell_color, corner_radius=20, border_width=3, border_color="#bdc3c7" if (urgency, importance) == (5,5) else "transparent")
+                cell.grid(row=6-importance+1, column=urgency, padx=12, pady=12, sticky="nsew")
                 self.cells[(urgency, importance)] = cell
 
         for i in range(6):
@@ -380,15 +429,19 @@ class EisenhowerApp:
         self.root.bind("<Control-n>", lambda e: self.add_task())
         self.root.bind("<Control-f>", lambda e: self.search_entry.focus())
         self.root.bind("<Delete>", lambda e: self.delete_selected())
+        self.root.bind("<space>", lambda e: self.toggle_selected_completed() if self.selected_task else None)
 
         # Status bar
-        status_frame = ctk.CTkFrame(self.root, height=30, fg_color="transparent")
+        status_frame = ctk.CTkFrame(self.root, height=35, fg_color="transparent")
         status_frame.pack(fill="x", side="bottom", pady=(0, 10))
-        self.status_label = ctk.CTkLabel(status_frame, text="Ready", font=ctk.CTkFont(size=12), text_color="gray60")
-        self.status_label.pack(side="left", padx=20)
+        self.status_label = ctk.CTkLabel(status_frame, text=f"Profile: {self.profile} | Ready", font=ctk.CTkFont(size=13), text_color="gray60")
+        self.status_label.pack(side="left", padx=25)
+        self.backup_label = ctk.CTkLabel(status_frame, text="", font=ctk.CTkFont(size=12), text_color="gray70")
+        self.backup_label.pack(side="right", padx=25)
 
         self.refresh_matrix()
         self.update_progress()
+        self.update_backup_label()
 
     def update_progress(self):
         if not self.tasks:
@@ -398,11 +451,27 @@ class EisenhowerApp:
         percent = int(completed_count / len(self.tasks) * 100)
         self.progress_label.configure(text=f"{percent}% Completed ({completed_count}/{len(self.tasks)})")
 
+    def update_backup_label(self):
+        if self.storage.last_backup:
+            self.backup_label.configure(text=f"Last backup: {self.storage.last_backup}")
+        else:
+            self.backup_label.configure(text="No backup yet")
+
+    def reset_filters(self):
+        for var in self.search_vars.values():
+            var.set("All")
+        self.search_entry.delete(0, "end")
+        self.refresh_matrix()
+
     def toggle_hide_completed(self):
         self.storage.hide_completed = not self.storage.hide_completed
         self.storage._save_config()
         self.refresh_matrix()
         self.update_progress()
+
+    def toggle_selected_completed(self):
+        if self.selected_task:
+            self.toggle_completed(self.selected_task, not self.selected_task.completed)
 
     def refresh_matrix(self):
         if self.status_label:
@@ -464,28 +533,42 @@ class EisenhowerApp:
             count_label.pack(anchor="nw", padx=10, pady=5)
 
             if u >= 4 and i >= 4:
-                ctk.CTkLabel(cell, text="Do First!", text_color="red", font=ctk.CTkFont(weight="bold")).pack(anchor="nw", padx=10)
+                ctk.CTkLabel(cell, text="Do First!", text_color="#e74c3c", font=ctk.CTkFont(weight="bold", size=14)).pack(anchor="nw", padx=10)
 
             for task in tasks_here:
-                original_color = "#f0f0f0" if task.completed else "white"
-                card = ctk.CTkFrame(cell, fg_color=original_color, corner_radius=10, cursor="hand2")
-                card.pack(fill="x", pady=4, padx=10)
+                original_color = "#f0f0f0" if task.completed else "#ffffff"
+                card = ctk.CTkFrame(cell, fg_color=original_color, corner_radius=12, border_width=2, border_color="#bdc3c7")
+                card.pack(fill="x", pady=6, padx=12)
 
                 check_var = ctk.BooleanVar(value=task.completed)
                 check = ctk.CTkCheckBox(card, text="", variable=check_var,
                                         command=lambda t=task, v=check_var: self.toggle_completed(t, v.get()))
-                check.pack(side="left", padx=8)
+                check.pack(side="left", padx=10)
 
                 name_text = f"~~{task.name}~~" if task.completed else task.name
-                name_label = ctk.CTkLabel(card, text=name_text, font=ctk.CTkFont(size=16, weight="normal" if task.completed else "bold"), anchor="w")
+                name_label = ctk.CTkLabel(card, text=name_text, font=ctk.CTkFont(size=16, weight="bold" if not task.completed else "normal"), anchor="w")
                 name_label.pack(side="left", padx=5)
 
-                if task.due_date and datetime.fromisoformat(task.due_date).date() < datetime.now().date():
-                    ctk.CTkLabel(card, text="OVERDUE", text_color="red").pack(side="right", padx=10)
+                info_frame = ctk.CTkFrame(card, fg_color="transparent")
+                info_frame.pack(side="right", padx=10)
+
+                if task.due_date:
+                    due_date = datetime.fromisoformat(task.due_date).strftime("%Y-%m-%d")
+                    due_label = ctk.CTkLabel(info_frame, text=due_date, font=ctk.CTkFont(size=10), text_color="gray50")
+                    due_label.pack(anchor="e")
+                    if datetime.fromisoformat(task.due_date).date() < datetime.now().date():
+                        overdue_label = ctk.CTkLabel(info_frame, text="OVERDUE", text_color="#e74c3c", font=ctk.CTkFont(size=10, weight="bold"))
+                        overdue_label.pack(anchor="e")
 
                 if task.tags:
-                    tags_str = ", ".join(task.tags[:3])
-                    ctk.CTkLabel(card, text=tags_str, text_color="gray50", font=ctk.CTkFont(size=10)).pack(side="right", padx=10)
+                    tags_str = ", ".join(task.tags)
+                    tags_label = ctk.CTkLabel(info_frame, text=tags_str, font=ctk.CTkFont(size=10), text_color="gray60")
+                    tags_label.pack(anchor="e")
+
+                if task.description:
+                    desc_preview = task.description[:50] + "..." if len(task.description) > 50 else task.description
+                    desc_label = ctk.CTkLabel(card, text=desc_preview, font=ctk.CTkFont(size=11, slant="italic"), text_color="gray70", anchor="w", justify="left")
+                    desc_label.pack(side="left", padx=5, pady=(5,0), fill="x", expand=True)
 
                 card.bind("<Button-1>", lambda e, t=task: self.select_and_edit(t))
                 card.bind("<Button-3>", lambda e, t=task: self.delete_task(t))
@@ -495,24 +578,25 @@ class EisenhowerApp:
                 self.task_widgets[task.id] = card
 
             if not tasks_here:
-                ctk.CTkLabel(cell, text="Drop tasks here", text_color="gray50", font=ctk.CTkFont(slant="italic")).pack(pady=30)
+                placeholder = ctk.CTkLabel(cell, text="Drop tasks here", text_color="gray50", font=ctk.CTkFont(size=14, slant="italic"))
+                placeholder.pack(expand=True)
 
         self.update_progress()
         if self.status_label:
-            self.status_label.configure(text="Ready")
+            self.status_label.configure(text=f"Profile: {self.profile} | {len(self.tasks)} tasks")
 
     def start_drag(self, widget, original_color, cell):
         self.drag_data["widget"] = widget
         self.drag_data["original_color"] = original_color
         self.drag_data["cell"] = cell
-        widget.configure(fg_color="#d0d0d0")
+        widget.configure(fg_color="#a0a0a0", border_width=4, border_color="#3498db")
         widget.lift()
 
     def drop(self, event):
         if not self.drag_data["widget"]:
             return
         widget = self.drag_data["widget"]
-        widget.configure(fg_color=self.drag_data["original_color"])
+        widget.configure(fg_color=self.drag_data["original_color"], border_width=2, border_color="#bdc3c7")
 
         x, y = self.root.winfo_pointerx(), self.root.winfo_pointery()
         target = None
@@ -551,43 +635,46 @@ class EisenhowerApp:
     def edit_task(self, task: Task):
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("Edit Task" if task.name else "New Task")
-        dialog.geometry("600x850")
+        dialog.geometry("650x900")
         dialog.transient(self.root)
         dialog.grab_set()
 
-        ctk.CTkLabel(dialog, text="Task Name", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(30,5), anchor="w", padx=50)
-        name_entry = ctk.CTkEntry(dialog, width=500)
+        main_frame = ctk.CTkScrollableFrame(dialog)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        ctk.CTkLabel(main_frame, text="Task Name", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(10,5), anchor="w")
+        name_entry = ctk.CTkEntry(main_frame, width=550)
         name_entry.insert(0, task.name)
-        name_entry.pack(pady=5, padx=50)
+        name_entry.pack(pady=5)
 
-        ctk.CTkLabel(dialog, text="Description", font=ctk.CTkFont(size=16)).pack(pady=(20,5), anchor="w", padx=50)
-        desc_text = ctk.CTkTextbox(dialog, width=500, height=100)
+        ctk.CTkLabel(main_frame, text="Description", font=ctk.CTkFont(size=16)).pack(pady=(20,5), anchor="w")
+        desc_text = ctk.CTkTextbox(main_frame, width=550, height=120)
         desc_text.insert("1.0", task.description)
-        desc_text.pack(pady=5, padx=50)
+        desc_text.pack(pady=5)
 
-        ctk.CTkLabel(dialog, text="Urgency", font=ctk.CTkFont(size=16)).pack(pady=(20,5), anchor="w", padx=50)
-        urgency_slider = ctk.CTkSlider(dialog, from_=1, to=5, number_of_steps=4)
+        ctk.CTkLabel(main_frame, text="Urgency", font=ctk.CTkFont(size=16)).pack(pady=(20,5), anchor="w")
+        urgency_slider = ctk.CTkSlider(main_frame, from_=1, to=5, number_of_steps=4)
         urgency_slider.set(task.urgency)
-        urgency_slider.pack(fill="x", padx=50)
+        urgency_slider.pack(fill="x", pady=5)
 
-        ctk.CTkLabel(dialog, text="Importance", font=ctk.CTkFont(size=16)).pack(pady=(15,5), anchor="w", padx=50)
-        importance_slider = ctk.CTkSlider(dialog, from_=1, to=5, number_of_steps=4)
+        ctk.CTkLabel(main_frame, text="Importance", font=ctk.CTkFont(size=16)).pack(pady=(15,5), anchor="w")
+        importance_slider = ctk.CTkSlider(main_frame, from_=1, to=5, number_of_steps=4)
         importance_slider.set(task.importance)
-        importance_slider.pack(fill="x", padx=50)
+        importance_slider.pack(fill="x", pady=5)
 
-        ctk.CTkLabel(dialog, text="Due Date", font=ctk.CTkFont(size=16)).pack(pady=(15,5), anchor="w", padx=50)
-        due_entry = DateEntry(dialog, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
+        ctk.CTkLabel(main_frame, text="Due Date", font=ctk.CTkFont(size=16)).pack(pady=(15,5), anchor="w")
+        due_entry = DateEntry(main_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
         if task.due_date:
             due_entry.set_date(task.due_date)
-        due_entry.pack(pady=5, padx=50)
+        due_entry.pack(pady=5)
 
-        ctk.CTkLabel(dialog, text="Tags (comma separated)", font=ctk.CTkFont(size=16)).pack(pady=(15,5), anchor="w", padx=50)
-        tags_entry = ctk.CTkEntry(dialog, width=500)
+        ctk.CTkLabel(main_frame, text="Tags (comma separated)", font=ctk.CTkFont(size=16)).pack(pady=(15,5), anchor="w")
+        tags_entry = ctk.CTkEntry(main_frame, width=550)
         tags_entry.insert(0, ", ".join(task.tags))
-        tags_entry.pack(pady=5, padx=50)
+        tags_entry.pack(pady=5)
 
         completed_var = ctk.BooleanVar(value=task.completed)
-        ctk.CTkCheckBox(dialog, text="Completed", variable=completed_var).pack(pady=10)
+        ctk.CTkCheckBox(main_frame, text="Completed", variable=completed_var).pack(pady=15, anchor="w")
 
         def save():
             name = name_entry.get().strip()
@@ -613,7 +700,10 @@ class EisenhowerApp:
             self.refresh_matrix()
             dialog.destroy()
 
-        ctk.CTkButton(dialog, text="Save", command=save, width=200, height=40).pack(pady=30)
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        ctk.CTkButton(btn_frame, text="Save", command=save, width=200, height=45).pack(side="left", padx=20)
+        ctk.CTkButton(btn_frame, text="Cancel", command=dialog.destroy, width=150, height=45).pack(side="right", padx=20)
 
     def delete_task(self, task: Task):
         if tkinter.messagebox.askyesno("Delete Task", f"Delete task '{task.name}'?"):
@@ -683,12 +773,14 @@ class EisenhowerApp:
     def show_statistics(self):
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("Statistics")
-        dialog.geometry("800x600")
+        dialog.geometry("800x650")
+        dialog.transient(self.root)
+        dialog.grab_set()
 
         fig, ax = plt.subplots(figsize=(6, 5))
         counts = [len([t for t in self.tasks if t.urgency == u and t.importance == i]) for i in range(5, 0, -1) for u in range(1, 6)]
         labels = [f"U{u}-I{i}" for i in range(5, 0, -1) for u in range(1, 6)]
-        ax.pie(counts, labels=labels, autopct='%1.1f%%')
+        ax.pie(counts, labels=labels, autopct='%1.1f%%', startangle=90)
         ax.set_title("Task Distribution")
         canvas = FigureCanvasTkAgg(fig, dialog)
         canvas.draw()
@@ -696,16 +788,22 @@ class EisenhowerApp:
 
         focus = [t for t in self.tasks if t.urgency + t.importance >= 8 or (t.due_date and datetime.fromisoformat(t.due_date).date() <= datetime.now().date())]
         if focus:
-            ctk.CTkLabel(dialog, text="Today's Focus:", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20)
+            ctk.CTkLabel(dialog, text="Today's Focus:", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=30, pady=(20,5))
             for t in focus:
-                ctk.CTkLabel(dialog, text=f"• {t.name}").pack(anchor="w", padx=40)
+                ctk.CTkLabel(dialog, text=f"• {t.name}", font=ctk.CTkFont(size=14)).pack(anchor="w", padx=50)
+
+        ctk.CTkButton(dialog, text="Close", command=dialog.destroy).pack(pady=20)
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
 
     def start_notification_thread(self):
         def notifier():
+            last_notified = {}
             while True:
                 overdue = [t for t in self.tasks if t.due_date and datetime.fromisoformat(t.due_date).date() < datetime.now().date() and not t.completed]
                 for t in overdue:
-                    notification.notify(title="Overdue Task", message=t.name, timeout=10)
+                    if t.id not in last_notified or (datetime.now() - last_notified[t.id]).total_seconds() > 21600:  # هر 6 ساعت
+                        notification.notify(title="Overdue Task", message=t.name, timeout=10)
+                        last_notified[t.id] = datetime.now()
                 time.sleep(3600)
         threading.Thread(target=notifier, daemon=True).start()
 
