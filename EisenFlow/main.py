@@ -15,7 +15,7 @@ from PySide6.QtCore import (
     Qt, QMimeData, Signal, QObject, QPropertyAnimation, QEasingCurve
 )
 from PySide6.QtGui import (
-    QPalette, QColor, QDrag, QPixmap, QBrush, QFont, QPainter
+    QPalette, QColor, QDrag, QPixmap, QFont, QPainter, QCursor
 )
 
 # SQLCipher for database encryption
@@ -64,7 +64,6 @@ class TaskManager:
         self.conn = None
         self._connect()
         self._create_table()
-        # پاک کردن password از حافظه پس از استفاده
         del password
 
     def _get_or_create_salt(self) -> bytes:
@@ -83,7 +82,6 @@ class TaskManager:
             self.conn.execute("PRAGMA kdf_iter = 256000")
             self.conn.execute("PRAGMA cipher_page_size = 4096")
             self.conn.execute("PRAGMA foreign_keys = ON")
-            # پاک کردن کلید از حافظه
             del self.db_key
             del key_hex
         except Exception as e:
@@ -114,6 +112,16 @@ class TaskManager:
             return [Task(row[1], row[2], row[3], row[4], uuid.UUID(row[0])) for row in rows]
         except Exception as e:
             logging.error(f"Error reading tasks: {e}")
+            return []
+
+    def get_all_tasks(self) -> List[Task]:
+        try:
+            cur = self.conn.cursor()
+            cur.execute("SELECT id, title, description, quadrant, status FROM tasks")
+            rows = cur.fetchall()
+            return [Task(row[1], row[2], row[3], row[4], uuid.UUID(row[0])) for row in rows]
+        except Exception as e:
+            logging.error(f"Error reading all tasks: {e}")
             return []
 
     def add_task(self, task: Task):
@@ -148,9 +156,7 @@ class TaskManager:
             logging.error(f"Error deleting task: {e}")
 
     def change_password(self, old_password: str, new_password: str):
-        """تغییر رمز عبور با استفاده از PRAGMA rekey"""
         try:
-            # باز کردن اتصال با کلید قدیمی
             old_key = derive_db_key(old_password, self.salt)
             old_key_hex = old_key.hex()
             self.conn.execute(f"PRAGMA key = \"x'{old_key_hex}'\"")
@@ -164,44 +170,48 @@ class TaskManager:
 
 # -------------------- Views --------------------
 class TaskWidget(QFrame):
-    FIXED_HEIGHT = 180
-
     def __init__(self, task: Task, task_manager: TaskManager, parent=None):
         super().__init__(parent)
         self.task = task
         self.task_manager = task_manager
-        self.setFixedHeight(self.FIXED_HEIGHT)
-        self.setMinimumWidth(300)
+        self.setMinimumHeight(170)
+        self.setMinimumWidth(320)
+
+        # Hybrid Glassmorphism + Neumorphism 2025
         self.setStyleSheet("""
             QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 50, 100, 240), stop:1 rgba(0, 30, 80, 240));
-                border-radius: 30px;
-                border: 3px solid #FFD700;
+                background: rgba(35, 45, 70, 220);
+                border-radius: 24px;
+                border: 1px solid rgba(120, 180, 255, 80);
+            }
+            QFrame:hover {
+                background: rgba(45, 60, 90, 240);
+                border: 2px solid #78B4FF;
             }
         """)
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(20)
-        shadow.setXOffset(0)
-        shadow.setYOffset(10)
-        shadow.setColor(QColor(0, 0, 0, 180))
-        self.setGraphicsEffect(shadow)
+        # Dual shadows for depth (neumorphic lift)
+        outer = QGraphicsDropShadowEffect(self)
+        outer.setBlurRadius(40)
+        outer.setXOffset(0)
+        outer.setYOffset(20)
+        outer.setColor(QColor(0, 0, 0, 180))
+
+        self.setGraphicsEffect(outer)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(25, 25, 25, 25)
-        layout.setSpacing(15)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(18)
 
         title_label = QLabel(task.title)
         title_label.setWordWrap(True)
-        title_label.setStyleSheet("font-weight: bold; font-size: 20px; color: #FFD700;")
-        title_label.setFont(QFont("Segoe UI", 20, QFont.Bold))
+        title_label.setStyleSheet("font-weight: bold; font-size: 20px; color: #FFFFFF;")
         layout.addWidget(title_label)
 
         if task.description:
             desc_label = QLabel(task.description)
             desc_label.setWordWrap(True)
-            desc_label.setStyleSheet("font-size: 15px; color: #FFFFFF; background-color: rgba(0,0,0,80); padding: 10px; border-radius: 10px;")
+            desc_label.setStyleSheet("font-size: 16px; color: #D0D0D0;")
             layout.addWidget(desc_label)
 
         layout.addStretch()
@@ -209,44 +219,29 @@ class TaskWidget(QFrame):
         status_label = QLabel(task.status)
         status_label.setAlignment(Qt.AlignCenter)
         status_label.setStyleSheet("""
-            font-size: 16px; font-weight: bold; color: #001F3F;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFD700, stop:1 #FFA500);
-            padding: 12px; border-radius: 20px; border: 2px solid #001F3F;
+            font-size: 16px; font-weight: bold; color: #FFFFFF;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(80, 140, 220, 200), stop:1 rgba(100, 160, 255, 200));
+            padding: 14px; border-radius: 24px;
+            border: 1px solid rgba(120, 180, 255, 120);
         """)
         layout.addWidget(status_label)
 
-        # انیمیشن hover ساده
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.opacity_effect.setOpacity(1.0)
-        # shadow اصلی را نگه می‌داریم اما opacity برای hover
-
-    def enterEvent(self, event):
-        anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        anim.setDuration(300)
-        anim.setStartValue(1.0)
-        anim.setEndValue(0.8)
-        anim.setEasingCurve(QEasingCurve.InOutQuad)
-        anim.start()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        anim.setDuration(300)
-        anim.setStartValue(0.8)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.InOutQuad)
-        anim.start()
-        super().leaveEvent(event)
+        self.setCursor(QCursor(Qt.OpenHandCursor))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            self.setCursor(QCursor(Qt.ClosedHandCursor))
             drag = QDrag(self)
             mime = QMimeData()
             mime.setData("application/x-task-id", str(self.task.id).encode())
             drag.setMimeData(mime)
             pixmap = self.grab()
             drag.setPixmap(pixmap)
-            drag.exec_(Qt.MoveAction)
+            drag.setHotSpot(event.position().toPoint())
+            result = drag.exec(Qt.MoveAction)
+            self.setCursor(QCursor(Qt.OpenHandCursor))
+            if result == Qt.MoveAction:
+                signals.tasks_changed.emit()
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
@@ -254,23 +249,26 @@ class TaskWidget(QFrame):
             dialog = EditTaskDialog(self.task, self.task_manager, self)
             if dialog.exec():
                 self.task_manager.update_task(self.task)
-                self.parent().parent().update_views()
+                signals.tasks_changed.emit()
         super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
-        menu.setStyleSheet("background-color: #001F3F; color: #FFD700; border: 1px solid #FFD700;")
+        menu.setStyleSheet("""
+            QMenu {
+                background: rgba(35, 45, 70, 240);
+                border-radius: 20px;
+                border: 1px solid rgba(120, 180, 255, 100);
+                color: #FFFFFF;
+            }
+        """)
         delete_action = menu.addAction("حذف وظیفه")
         action = menu.exec(event.globalPos())
         if action == delete_action:
-            reply = QMessageBox.question(
-                self, "تأیید حذف",
-                "آیا از حذف این وظیفه اطمینان دارید؟ این عمل قابل بازگشت نیست.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
+            reply = QMessageBox.question(self, "تأیید", "حذف شود؟", QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
                 self.task_manager.delete_task(self.task.id)
-                self.parent().parent().update_views()
+                signals.tasks_changed.emit()
 
 class DraggableListWidget(QListWidget):
     def __init__(self, quadrant: str, task_manager: TaskManager):
@@ -278,172 +276,279 @@ class DraggableListWidget(QListWidget):
         self.quadrant = quadrant
         self.task_manager = task_manager
         self.setAcceptDrops(True)
-        self.setDragEnabled(True)
+        self.setDragDropMode(QListWidget.DragDrop)
         self.setDefaultDropAction(Qt.MoveAction)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def startDrag(self, supportedActions):
+        item = self.currentItem()
+        if item is None:
+            return
+
+        widget = self.itemWidget(item)
+        if widget is None:
+            return
+
+        mime = QMimeData()
+        mime.setData("application/x-task-id", str(widget.task.id).encode())
+
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        pixmap = widget.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(pixmap.rect().center())
+        drag.exec(Qt.MoveAction)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat("application/x-task-id"):
+            self.setStyleSheet("border: 4px dashed #78B4FF; background: rgba(120, 180, 255, 60); border-radius: 25px;")
             event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet("background: transparent; border: none;")
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasFormat("application/x-task-id"):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
-        mime = event.mimeData()
-        if mime.hasFormat("application/x-task-id"):
-            task_id_str = bytes(mime.data("application/x-task-id")).decode()
+        if event.mimeData().hasFormat("application/x-task-id"):
+            task_id_bytes = event.mimeData().data("application/x-task-id")
+            task_id_str = bytes(task_id_bytes).decode('utf-8')
             task_id = uuid.UUID(task_id_str)
-            for task in self.task_manager.get_all_tasks():  # بهبود با cache در آینده
+            for task in self.task_manager.get_all_tasks():
                 if task.id == task_id:
                     task.quadrant = self.quadrant
                     self.task_manager.update_task(task)
                     break
             event.acceptProposedAction()
             signals.tasks_changed.emit()
+        self.dragLeaveEvent(event)
 
 class QuadrantWidget(QWidget):
+    COLORS = {"Q1": "#FF6B6B", "Q2": "#51CF66", "Q3": "#FFD43B", "Q4": "#ADB5BD"}
+
     def __init__(self, key: str, label_text: str, task_manager: TaskManager):
         super().__init__()
         self.key = key
         self.label_text = label_text
         self.task_manager = task_manager
 
-        self.setStyleSheet("""
-            QWidget {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(0, 60, 120, 240), stop:1 rgba(0, 40, 80, 240));
-                border-radius: 35px;
-                border: 4px solid #FFD700;
-            }
+        color = self.COLORS[key]
+
+        self.setStyleSheet(f"""
+            QWidget {{
+                background: rgba(25, 40, 65, 180);
+                border-radius: 30px;
+                border: 2px solid {color}66;
+            }}
         """)
 
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(30)
+        shadow.setBlurRadius(50)
         shadow.setXOffset(0)
-        shadow.setYOffset(15)
-        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setYOffset(25)
+        shadow.setColor(QColor(0, 0, 0, 220))
         self.setGraphicsEffect(shadow)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(25)
 
         header = QHBoxLayout()
-        title_label = QLabel(label_text)
-        title_label.setStyleSheet("font-size: 34px; font-weight: bold; color: #FFD700;")
-        title_label.setFont(QFont("Segoe UI", 34, QFont.Bold))
-        header.addWidget(title_label)
+        title = QLabel(label_text)
+        title.setStyleSheet(f"font-size: 32px; font-weight: bold; color: {color};")
+        header.addWidget(title)
         header.addStretch()
-        self.count_label = QLabel("0 وظیفه")
-        self.count_label.setStyleSheet("font-size: 24px; color: #FFFFFF; background-color: rgba(0,0,0,150); padding: 12px; border-radius: 20px;")
-        header.addWidget(self.count_label)
+        self.count = QLabel("0")
+        self.count.setStyleSheet(f"font-size: 24px; color: {color}; background: rgba(0,0,0,120); padding: 14px; border-radius: 25px;")
+        header.addWidget(self.count)
         layout.addLayout(header)
 
-        self.list_widget = DraggableListWidget(key, task_manager)
+        self.list = DraggableListWidget(key, task_manager)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setWidget(self.list_widget)
+        scroll.setStyleSheet("border: none; background: transparent;")
+        scroll.setWidget(self.list)
         layout.addWidget(scroll)
+
+        self.setToolTip(f"{label_text}: وظایف را به اینجا بکشید")
 
         signals.tasks_changed.connect(self.update_views)
         self.update_views()
 
     def update_views(self):
-        self.list_widget.clear()
+        self.list.clear()
         tasks = self.task_manager.get_tasks_by_quadrant(self.key)
         for task in tasks:
-            item = QListWidgetItem(self.list_widget)
-            widget = TaskWidget(task, self.task_manager, self.list_widget)
+            item = QListWidgetItem(self.list)
+            widget = TaskWidget(task, self.task_manager)
             item.setSizeHint(widget.sizeHint())
-            self.list_widget.setItemWidget(item, widget)
-        self.count_label.setText(f"{len(tasks)} وظیفه")
+            self.list.setItemWidget(item, widget)
+        self.count.setText(str(len(tasks)))
 
-class AddTaskDialog(QDialog):
-    def __init__(self, task_manager: TaskManager, parent=None):
+class ModernDialog(QDialog):
+    def __init__(self, title, parent=None):
         super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setStyleSheet("""
+            QDialog {
+                background: rgba(30, 45, 70, 250);
+                border-radius: 30px;
+                border: 1px solid rgba(120, 180, 255, 100);
+            }
+            QLabel { color: #FFFFFF; font-size: 17px; font-weight: bold; }
+            QLineEdit, QComboBox {
+                background: rgba(50, 65, 95, 240);
+                color: #FFFFFF;
+                padding: 16px;
+                border-radius: 18px;
+                border: 1px solid rgba(120, 180, 255, 120);
+                font-size: 16px;
+            }
+            QLineEdit:focus, QComboBox:focus {
+                border: 2px solid #78B4FF;
+            }
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #64B5FF, stop:1 #4787D9);
+                color: white;
+                padding: 16px;
+                border-radius: 20px;
+                font-weight: bold;
+                font-size: 16px;
+            }
+            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #78B4FF, stop:1 #5A9EFF); }
+            QPushButton:pressed { background: #3A6BB5; }
+        """)
+
+class AddTaskDialog(ModernDialog):
+    def __init__(self, task_manager: TaskManager, parent=None):
+        super().__init__("افزودن وظیفه جدید", parent)
         self.task_manager = task_manager
-        self.setWindowTitle("افزودن وظیفه جدید")
-        layout = QFormLayout(self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(50, 50, 50, 50)
+        layout.setSpacing(30)
 
-        self.title_edit = QLineEdit()
-        self.desc_edit = QLineEdit()
-        self.quadrant_combo = QComboBox()
-        self.quadrant_combo.addItems(["Q1", "Q2", "Q3", "Q4"])
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        self.title = QLineEdit()
+        self.title.setPlaceholderText("عنوان وظیفه را وارد کنید...")
+        self.desc = QLineEdit()
+        self.desc.setPlaceholderText("توضیحات اختیاری...")
+        self.quadrant = QComboBox()
+        self.quadrant.addItems(["Q1 - فوری و مهم", "Q2 - مهم اما غیرفوری", "Q3 - فوری اما غیرمهم", "Q4 - غیرفوری و غیرمهم"])
 
-        layout.addRow("عنوان:", self.title_edit)
-        layout.addRow("توضیحات:", self.desc_edit)
-        layout.addRow("ربع:", self.quadrant_combo)
+        form.addRow("عنوان:", self.title)
+        form.addRow("توضیحات:", self.desc)
+        form.addRow("ربع:", self.quadrant)
+        layout.addLayout(form)
 
         buttons = QHBoxLayout()
-        ok_btn = QPushButton("افزودن")
-        cancel_btn = QPushButton("لغو")
-        ok_btn.clicked.connect(self.validate_and_accept)
-        cancel_btn.clicked.connect(self.reject)
-        buttons.addWidget(ok_btn)
-        buttons.addWidget(cancel_btn)
-        layout.addRow(buttons)
+        ok = QPushButton("افزودن")
+        cancel = QPushButton("لغو")
+        ok.clicked.connect(self.accept_task)
+        cancel.clicked.connect(self.reject)
+        buttons.addStretch()
+        buttons.addWidget(ok)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
 
-    def validate_and_accept(self):
-        title = self.title_edit.text().strip()
+    def accept_task(self):
+        title = self.title.text().strip()
         if not title:
-            QMessageBox.warning(self, "خطا", "عنوان وظیفه الزامی است.")
+            QMessageBox.warning(self, "خطا", "عنوان الزامی است")
             return
-        task = Task(title, self.desc_edit.text(), self.quadrant_combo.currentText())
+        q = self.quadrant.currentText().split(" - ")[0]
+        task = Task(title, self.desc.text(), q)
         self.task_manager.add_task(task)
         self.accept()
 
-class EditTaskDialog(AddTaskDialog):
+class EditTaskDialog(ModernDialog):
     def __init__(self, task: Task, task_manager: TaskManager, parent=None):
-        super().__init__(task_manager, parent)
+        super().__init__("ویرایش وظیفه", parent)
         self.task = task
-        self.setWindowTitle("ویرایش وظیفه")
-        self.title_edit.setText(task.title)
-        self.desc_edit.setText(task.description)
-        self.quadrant_combo.setCurrentText(task.quadrant)
+        self.task_manager = task_manager
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(50, 50, 50, 50)
+        layout.setSpacing(30)
 
-    def validate_and_accept(self):
-        title = self.title_edit.text().strip()
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        self.title = QLineEdit(task.title)
+        self.title.setPlaceholderText("عنوان وظیفه...")
+        self.desc = QLineEdit(task.description)
+        self.desc.setPlaceholderText("توضیحات...")
+        self.quadrant = QComboBox()
+        self.quadrant.addItems(["Q1 - فوری و مهم", "Q2 - مهم اما غیرفوری", "Q3 - فوری اما غیرمهم", "Q4 - غیرفوری و غیرمهم"])
+        self.quadrant.setCurrentText(f"{task.quadrant} - {['فوری و مهم','مهم اما غیرفوری','فوری اما غیرمهم','غیرفوری و غیرمهم'][int(task.quadrant[1])-1]}")
+
+        form.addRow("عنوان:", self.title)
+        form.addRow("توضیحات:", self.desc)
+        form.addRow("ربع:", self.quadrant)
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        ok = QPushButton("به‌روزرسانی")
+        cancel = QPushButton("لغو")
+        ok.clicked.connect(self.accept_task)
+        cancel.clicked.connect(self.reject)
+        buttons.addStretch()
+        buttons.addWidget(ok)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+
+    def accept_task(self):
+        title = self.title.text().strip()
         if not title:
-            QMessageBox.warning(self, "خطا", "عنوان وظیفه الزامی است.")
+            QMessageBox.warning(self, "خطا", "عنوان الزامی است")
             return
+        q = self.quadrant.currentText().split(" - ")[0]
         self.task.title = title
-        self.task.description = self.desc_edit.text()
-        self.task.quadrant = self.quadrant_combo.currentText()
+        self.task.description = self.desc.text()
+        self.task.quadrant = q
         self.task_manager.update_task(self.task)
         self.accept()
 
-class ChangePasswordDialog(QDialog):
+class ChangePasswordDialog(ModernDialog):
     def __init__(self, task_manager: TaskManager, parent=None):
-        super().__init__(parent)
+        super().__init__("تغییر رمز عبور", parent)
         self.task_manager = task_manager
-        self.setWindowTitle("تغییر رمز عبور")
-        layout = QFormLayout(self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(50, 50, 50, 50)
+        layout.setSpacing(30)
 
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
         self.old_pass = QLineEdit()
         self.old_pass.setEchoMode(QLineEdit.Password)
+        self.old_pass.setPlaceholderText("رمز عبور فعلی")
         self.new_pass = QLineEdit()
         self.new_pass.setEchoMode(QLineEdit.Password)
+        self.new_pass.setPlaceholderText("رمز عبور جدید")
         self.confirm_pass = QLineEdit()
         self.confirm_pass.setEchoMode(QLineEdit.Password)
+        self.confirm_pass.setPlaceholderText("تکرار رمز عبور جدید")
 
-        layout.addRow("رمز عبور فعلی:", self.old_pass)
-        layout.addRow("رمز عبور جدید:", self.new_pass)
-        layout.addRow("تکرار رمز عبور جدید:", self.confirm_pass)
+        form.addRow("رمز عبور فعلی:", self.old_pass)
+        form.addRow("رمز عبور جدید:", self.new_pass)
+        form.addRow("تکرار:", self.confirm_pass)
+        layout.addLayout(form)
 
         buttons = QHBoxLayout()
-        ok_btn = QPushButton("تغییر")
-        cancel_btn = QPushButton("لغو")
-        ok_btn.clicked.connect(self.validate_and_change)
-        cancel_btn.clicked.connect(self.reject)
-        buttons.addWidget(ok_btn)
-        buttons.addWidget(cancel_btn)
-        layout.addRow(buttons)
+        ok = QPushButton("تغییر")
+        cancel = QPushButton("لغو")
+        ok.clicked.connect(self.validate_and_change)
+        cancel.clicked.connect(self.reject)
+        buttons.addStretch()
+        buttons.addWidget(ok)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
 
     def validate_and_change(self):
         old = self.old_pass.text()
         new = self.new_pass.text()
         confirm = self.confirm_pass.text()
-        if not old or not new or not confirm:
+        if not all([old, new, confirm]):
             QMessageBox.warning(self, "خطا", "تمام فیلدها الزامی هستند.")
             return
         if new != confirm:
@@ -451,29 +556,57 @@ class ChangePasswordDialog(QDialog):
             return
         try:
             self.task_manager.change_password(old, new)
-            QMessageBox.information(self, "موفقیت", "رمز عبور با موفقیت تغییر یافت.")
+            QMessageBox.information(self, "موفقیت", "رمز عبور تغییر یافت.")
             self.accept()
         except:
             QMessageBox.critical(self, "خطا", "رمز عبور فعلی اشتباه است.")
 
-class LoginDialog(QDialog):
+class LoginDialog(ModernDialog):
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("ورود / ثبت‌نام")
-        layout = QFormLayout(self)
+        super().__init__("EisenFlow - ورود / ثبت‌نام")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(70, 70, 70, 70)
+        layout.setSpacing(35)
+
+        title = QLabel("EisenFlow")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 52px; font-weight: bold; color: #78B4FF;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("مدیریت هوشمند وظایف با ماتریس آیزنهاور")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("font-size: 20px; color: #C0C0C0;")
+        layout.addWidget(subtitle)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setHorizontalSpacing(25)
+        form.setVerticalSpacing(20)
 
         self.username_edit = QLineEdit()
+        self.username_edit.setPlaceholderText("نام کاربری خود را وارد کنید")
+        self.username_edit.setMinimumHeight(60)
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
+        self.password_edit.setPlaceholderText("رمز عبور")
+        self.password_edit.setMinimumHeight(60)
 
-        layout.addRow("نام کاربری:", self.username_edit)
-        layout.addRow("رمز عبور:", self.password_edit)
+        form.addRow("نام کاربری:", self.username_edit)
+        form.addRow("رمز عبور:", self.password_edit)
+        layout.addLayout(form)
 
-        buttons = QHBoxLayout()
         login_btn = QPushButton("ورود / ثبت‌نام")
+        login_btn.setMinimumHeight(70)
+        login_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #78B4FF, stop:1 #5A9EFF);
+                color: white; padding: 20px; border-radius: 30px; font-size: 22px; font-weight: bold;
+            }
+            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8AC4FF, stop:1 #64B5FF); }
+            QPushButton:pressed { background: #3A6BB5; }
+        """)
         login_btn.clicked.connect(self.try_login)
-        buttons.addWidget(login_btn)
-        layout.addRow(buttons)
+        layout.addWidget(login_btn, alignment=Qt.AlignCenter)
 
         self.username = None
         self.password = None
@@ -488,10 +621,8 @@ class LoginDialog(QDialog):
         db_path = USERS_DIR / f"{username}.db"
         salt_path = USERS_DIR / f"{username}_salt.bin"
 
-        # اگر فایل‌ها وجود نداشته باشند، کاربر جدید است و ثبت‌نام موفق
         if not db_path.exists() or not salt_path.exists():
             try:
-                # ایجاد کاربر جدید
                 task_manager = TaskManager(username, password)
                 task_manager.close()
                 QMessageBox.information(self, "موفقیت", "کاربر جدید با موفقیت ایجاد شد.")
@@ -499,98 +630,78 @@ class LoginDialog(QDialog):
                 self.password = password
                 self.accept()
                 return
-            except Exception as e:
+            except:
                 QMessageBox.critical(self, "خطا", "خطا در ایجاد کاربر جدید.")
                 return
 
-        # ورود موجود
         try:
             task_manager = TaskManager(username, password)
-            task_manager.close()  # تست اتصال
+            task_manager.close()
             self.username = username
             self.password = password
             self.accept()
-        except Exception:
+        except:
             QMessageBox.critical(self, "خطا", "نام کاربری یا رمز عبور اشتباه است.")
 
 class BackgroundWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.background_pixmap = None
-        background_paths = ["bg1.jpg", "bg2.jpg", "bg3.jpg", "bg4.jpg", "bg5.jpg", "bg.webp", "bg.jpg", "bg.png"]
-        for path_str in background_paths:
-            path = Path(path_str)
-            if path.exists():
-                self.background_pixmap = QPixmap(str(path))
-                if not self.background_pixmap.isNull():
-                    break
-        if not self.background_pixmap:
-            self.setStyleSheet("background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0A1E50, stop:1 #000A28);")
+        self.setStyleSheet("background: #0F1A2B;")
 
     def paintEvent(self, event):
-        if self.background_pixmap:
-            painter = QPainter(self)
-            scaled = self.background_pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            painter.drawPixmap(0, 0, scaled)
-        else:
-            super().paintEvent(event)
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(15, 25, 45))
 
 class MainWindow(QMainWindow):
     def __init__(self, username: str, password: str):
         super().__init__()
-        self.username = username
-        self.setWindowTitle(f"EisenFlow – خوش آمدید {username}")
-        self.resize(1600, 900)
+        self.setWindowTitle(f"EisenFlow – {username}")
+        self.setMinimumSize(1600, 900)
         self.task_manager = TaskManager(username, password)
 
-        background = BackgroundWidget()
-        self.setCentralWidget(background)
-        self.grid = QGridLayout(background)
-        self.grid.setSpacing(40)
-        self.grid.setContentsMargins(40, 40, 40, 40)
+        bg = BackgroundWidget()
+        self.setCentralWidget(bg)
+        grid = QGridLayout(bg)
+        grid.setSpacing(40)
+        grid.setContentsMargins(50, 50, 50, 50)
 
         quadrants = [
             ("Q1", "فوری و مهم"),
             ("Q2", "مهم اما غیرفوری"),
             ("Q3", "فوری اما غیرمهم"),
-            ("Q4", "غیرفوری و غیرمهم"),
+            ("Q4", "غیرفوری و غیرمهم")
         ]
 
-        for i, (key, label) in enumerate(quadrants):
-            quadrant_widget = QuadrantWidget(key, label, self.task_manager)
-            row = i // 2
-            col = i % 2
-            self.grid.addWidget(quadrant_widget, row, col)
-            self.grid.setRowStretch(row, 1)
-            self.grid.setColumnStretch(col, 1)
+        for i, (k, l) in enumerate(quadrants):
+            q = QuadrantWidget(k, l, self.task_manager)
+            r, c = divmod(i, 2)
+            grid.addWidget(q, r, c)
+            grid.setRowStretch(r, 1)
+            grid.setColumnStretch(c, 1)
 
-        add_btn = QPushButton("افزودن وظیفه جدید")
-        add_btn.setStyleSheet("""
+        toolbar = QHBoxLayout()
+        add = QPushButton("افزودن وظیفه جدید")
+        add.setStyleSheet("""
             QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFD700, stop:1 #FFA500);
-                color: #001F3F; font-size: 20px; padding: 18px; border-radius: 25px;
-                font-weight: bold; min-width: 250px; border: 3px solid #001F3F;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #64B5FF, stop:1 #4787D9);
+                color: white; padding: 20px; border-radius: 30px; font-size: 20px; font-weight: bold;
+                min-width: 320px; border: 2px solid rgba(120, 180, 255, 120);
             }
-            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFA500, stop:1 #FF8C00); }
+            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #78B4FF, stop:1 #5A9EFF); }
         """)
-        add_btn.clicked.connect(self.open_add_dialog)
+        add.clicked.connect(lambda: AddTaskDialog(self.task_manager, self).exec())
 
-        change_pass_btn = QPushButton("تغییر رمز عبور")
-        change_pass_btn.setStyleSheet(add_btn.styleSheet())
-        change_pass_btn.clicked.connect(self.open_change_password)
+        change = QPushButton("تغییر رمز عبور")
+        change.setStyleSheet(add.styleSheet().replace("#64B5FF", "#FF9800").replace("#4787D9", "#F57C00"))
 
-        self.grid.addWidget(add_btn, 2, 0, Qt.AlignCenter)
-        self.grid.addWidget(change_pass_btn, 2, 1, Qt.AlignCenter)
+        change.clicked.connect(lambda: ChangePasswordDialog(self.task_manager, self).exec())
 
-    def open_add_dialog(self):
-        dialog = AddTaskDialog(self.task_manager, self)
-        dialog.exec()
+        toolbar.addStretch()
+        toolbar.addWidget(add)
+        toolbar.addWidget(change)
+        toolbar.addStretch()
 
-    def open_change_password(self):
-        dialog = ChangePasswordDialog(self.task_manager, self)
-        if dialog.exec():
-            QMessageBox.information(self, "موفقیت", "رمز عبور تغییر یافت. برنامه برای اعمال تغییرات بسته خواهد شد.")
-            self.close()  # نیاز به ورود مجدد
+        grid.addLayout(toolbar, 2, 0, 1, 2, Qt.AlignCenter)
 
     def closeEvent(self, event):
         self.task_manager.close()
@@ -602,16 +713,16 @@ if __name__ == "__main__":
     app.setFont(QFont("Segoe UI", 12))
 
     palette = QPalette()
-    palette.setColor(QPalette.Window, QColor(10, 30, 60))
-    palette.setColor(QPalette.WindowText, QColor(255, 215, 0))
-    palette.setColor(QPalette.Base, QColor(0, 80, 100))
-    palette.setColor(QPalette.Text, Qt.white)
-    palette.setColor(QPalette.Button, QColor(255, 215, 0, 200))
-    palette.setColor(QPalette.ButtonText, QColor(0, 0, 128))
+    palette.setColor(QPalette.Window, QColor(15, 25, 45))
+    palette.setColor(QPalette.WindowText, QColor(240, 240, 240))
+    palette.setColor(QPalette.Base, QColor(30, 45, 70))
+    palette.setColor(QPalette.Text, QColor(240, 240, 240))
+    palette.setColor(QPalette.Button, QColor(50, 70, 100))
+    palette.setColor(QPalette.ButtonText, QColor(240, 240, 240))
     app.setPalette(palette)
 
-    login_dialog = LoginDialog()
-    if login_dialog.exec() == QDialog.Accepted:
-        window = MainWindow(login_dialog.username, login_dialog.password)
-        window.show()
+    login = LoginDialog()
+    if login.exec() == QDialog.Accepted:
+        win = MainWindow(login.username, login.password)
+        win.show()
         sys.exit(app.exec())
